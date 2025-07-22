@@ -1,0 +1,12 @@
+{
+  "name": "sysadmin",
+  "type": "관리자대시보드",
+  "description": "sysadmin 시스템 관리자 대시보드 (자동 생성)",
+  "created_at": "2025-07-22 13:45:23",
+  "creator": "limeking",
+  "enabled": true,
+  "backend": "backend/app/modules/sysadmin",
+  "frontend": "frontend/src/modules/sysadmin",
+  "db": "db/modules/sysadmin.sql",
+  "ws_needed": true
+}

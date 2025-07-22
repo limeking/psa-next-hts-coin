@@ -1,0 +1,17 @@
+**/node_modules
+**/build
+.git
+.gitignore
+.env
+.env.*
+db/data
+redis/data
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.vscode
+.idea
+README.md
+*.md
+Dockerfile

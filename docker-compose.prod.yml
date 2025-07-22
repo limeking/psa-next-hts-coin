@@ -1,0 +1,53 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.prod
+    environment:
+      - PYTHONPATH=/app
+      - PSA_PRODUCTION=1 
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: psa_db
+    volumes:
+      - ./db/data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "13306:3306"
+
+  redis:
+    image: redis:7
+    volumes:
+      - ./redis/data:/data
+    ports:
+      - "6379:6379"
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/conf.d/default.conf
+      - ./frontend/build:/usr/share/nginx/html:ro  # frontend 컨테이너에서 빌드된 파일 마운트(혹은 COPY)
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+      - frontend
