@@ -1,9 +1,11 @@
 # automation/add_module.py
 import sys
 import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import json
 import datetime
 from automation.utils import add_route_to_main, add_route_to_appjs, run_generate_nginx, rebuild_frontend_and_nginx
+
 
 def main():
     if len(sys.argv) < 2:
