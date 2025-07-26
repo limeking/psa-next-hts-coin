@@ -35,7 +35,9 @@ frontend/.env
 docker-compose.override.yml
 *.pid
 *.sock
+/data
 db/data/
+*.csv
 redis/data/
 *.db
 *.sqlite3

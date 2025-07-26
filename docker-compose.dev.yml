@@ -6,6 +6,7 @@ services:
     volumes:
       - ./:/app
       - ./logs/backend:/var/log/psa-next
+      - D:/coin_data:/data
     environment:
       - PYTHONPATH=/app
     ports:

@@ -1,0 +1,11 @@
+{
+  "name": "coin_backtest",
+  "type": "일반모듈",
+  "description": "coin_backtest 기능 모듈 (자동 생성)",
+  "created_at": "2025-07-22 14:32:44",
+  "creator": "limeking",
+  "enabled": true,
+  "backend": "backend/app/modules/coin_backtest",
+  "frontend": "frontend/src/modules/coin_backtest",
+  "db": "db/modules/coin_backtest.sql"
+}
