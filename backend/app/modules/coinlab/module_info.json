@@ -1,0 +1,11 @@
+{
+  "name": "coinlab",
+  "type": "일반모듈",
+  "description": "coinlab 기능 모듈 (자동 생성)",
+  "created_at": "2025-07-30 09:44:34",
+  "creator": "unknown",
+  "enabled": true,
+  "backend": "backend/app/modules/coinlab",
+  "frontend": "frontend/src/modules/coinlab",
+  "db": "db/modules/coinlab.sql"
+}

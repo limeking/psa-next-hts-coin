@@ -899,9 +899,11 @@ export default function CoinBacktestRunPage() {
                     setMultiStrategies(arr);
                   }}>
                   <option value="24h">일봉</option>
+                  <option value="4h">4시간봉</option>
                   <option value="1h">1시간봉</option>
                   <option value="10m">10분봉</option>
                   <option value="3m">3분봉</option>
+                  <option value="1m">1분봉</option>
                 </select>
                 <select value={item.strategy}
                   onChange={e => {
