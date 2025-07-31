@@ -1,35 +1,39 @@
-// frontend/src/modules/coinlab/pages/CoinLabMainPage.js
-import React from "react";
+// src/pages/MainPage.js
 import { useNavigate } from "react-router-dom";
 
-export default function CoinLabMainPage() {
+export default function MainPage() {
   const navigate = useNavigate();
   return (
-    <div style={{ padding: 32, maxWidth: 900, margin: "0 auto" }}>
-      <h1 style={{ color: "#1976d2", marginBottom: 20 }}>🧪 코인랩 실험실</h1>
-      <p style={{ color: "#666", marginBottom: 32 }}>
-        새로운 전략/옵션 실험, 인터랙티브 백테스트, 결과 분석을 위한 실험실 공간입니다.<br/>
-        다양한 전략을 직접 조합하고 실시간으로 결과를 확인하세요!
+    <div style={{ padding: 40, maxWidth: 900, margin: "0 auto" }}>
+      <h1 style={{ fontSize: 32, marginBottom: 16, color: "#1976d2" }}>
+        🚀 PSA-NEXT-HTS-COIN 홈
+      </h1>
+      <p style={{ color: "#555", marginBottom: 32 }}>
+        실전 HTS 스타일의 트레이딩/전략 실험/시장 대시보드<br />
+        원하는 메뉴를 선택하세요!
       </p>
-      <div style={{ display: "flex", gap: 32, marginTop: 24 }}>
+
+      {/* HTS처럼 메인메뉴 → 대시보드, 전략실험 등 분기 */}
+      <div style={{ display: "flex", gap: 32 }}>
         <button
-          onClick={() => navigate("run")}
-          style={{
-            background: "#1976d2", color: "#fff", padding: "16px 32px",
-            border: "none", borderRadius: 8, fontSize: 18, fontWeight: "bold", cursor: "pointer"
-          }}
+          style={{ flex: 1, padding: 40, fontSize: 22, borderRadius: 12, background: "#e3f2fd", border: "none", cursor: "pointer" }}
+          onClick={() => navigate("/coinlab/dashboard")}
         >
-          ▶️ 전략 실행/테스트
+          📊 시장 대시보드
         </button>
         <button
-          onClick={() => navigate("strategy")}
-          style={{
-            background: "#f57c00", color: "#fff", padding: "16px 32px",
-            border: "none", borderRadius: 8, fontSize: 18, fontWeight: "bold", cursor: "pointer"
-          }}
+          style={{ flex: 1, padding: 40, fontSize: 22, borderRadius: 12, background: "#fffde7", border: "none", cursor: "pointer" }}
+          onClick={() => navigate("/coinlab")}
         >
-          ⚙️ 전략/옵션 설정
+          ⚙️ 전략 실험실
         </button>
+        {/* 기타 메뉴 계속 추가 가능 */}
+      </div>
+
+      <div style={{ marginTop: 48, color: "#888", fontSize: 14 }}>
+        <hr />
+        <div>📢 PSA-NEXT 실전 HTS 시스템 - 2025</div>
+        <div>ver 0.9.0 / 전체 구조 및 자동화 기반 완성</div>
       </div>
     </div>
   );

@@ -1,0 +1,37 @@
+{
+  "엔터프라이즈 블록체인": [
+    "HBAR_KRW",
+    "ALT_KRW"
+  ],
+  "실물자산 토큰화 (RWA)": [
+    "ONDO_KRW",
+    "CTC_KRW"
+  ],
+  "인공지능 (AI)": [
+    "FET_KRW",
+    "RNDR_KRW",
+    "OCEAN_KRW"
+  ],
+  "NFT / 게임": [
+    "MAGIC_KRW",
+    "ENJ_KRW",
+    "APE_KRW"
+  ],
+  "메타버스": [
+    "MANA_KRW",
+    "SAND_KRW",
+    "MOS_KRW"
+  ],
+  "오라클": [
+    "LINK_KRW",
+    "API3_KRW"
+  ],
+  "스테이블코인 연계 자산": [
+    "JST_KRW",
+    "SKY_KRW"
+  ],
+  "의료 / 교육 콘텐츠": [
+    "HIPPO_KRW",
+    "IQ_KRW"
+  ]
+}
