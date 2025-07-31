@@ -10,7 +10,7 @@ function App() {
     <Router>
       <Routes>
           <Route path="/coin_backtest/*" element={ <Coin_backtestPage /> } />
-          <Route path="/coinlab" element={ <CoinlabPage /> } />
+          <Route path="/coinlab/*" element={ <CoinlabPage /> } />
           <Route path="/sysadmin/module-tree" element={<ModuleTreePage />} />
           <Route path="/sysadmin/status" element={<SystemStatusPage />} />
         {/* Route will be auto-injected by automation */}
