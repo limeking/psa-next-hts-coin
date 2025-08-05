@@ -1,11 +1,11 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";   // 반드시 추가!
-import MarketStatusBanner from '../components/MarketStatusBanner';
+import MarketStatusBanner from '../components/Dashboard/MarketStatusBanner';
 import SectorThemeTable from '../components/SectorThemeTable';
-import StockRankingTable from '../components/StockRankingTable';
+import StockRankingTable from '../components/Common/StockRankingTable';
 import StrategyMenuCards from '../components/StrategyMenuCards';
-import NoticeBar from '../components/NoticeBar';
-import ThemeMappingEditor from '../components/ThemeMappingEditor';
+import NoticeBar from '../components/Dashboard/NoticeBar';
+import ThemeMappingEditor from '../components/Theme/ThemeMappingEditor';
 
 export default function HTSDashboardPage() {
   const navigate = useNavigate();   // 반드시 추가!
@@ -34,22 +34,54 @@ export default function HTSDashboardPage() {
         📊 실전 HTS 시장 대시보드
       </h2>
       {/* === 여기가 추천 위치 === */}
-      <button
-        onClick={() => setShowEditor(true)}
-        style={{
-          marginBottom: 16,
-          padding: "8px 18px",
-          borderRadius: 8,
-          background: "#ffecb3",
-          border: "1px solid #ff9800",
-          color: "#ff9800",
-          fontWeight: 700,
-          fontSize: 15,
-          cursor: "pointer"
+      <div style={{ display: "flex", gap: 20, marginBottom: 16 }}>
+        <button
+          onClick={() => setShowEditor(true)}
+          style={{
+            padding: "8px 18px",
+            borderRadius: 8,
+            background: "#ffecb3",
+            border: "1px solid #ff9800",
+            color: "#ff9800",
+            fontWeight: 700,
+            fontSize: 15,
+            cursor: "pointer"
+          }}
+        >
+          🛠️ 테마 매핑 에디터
+        </button>
+        <button
+          onClick={() => navigate("/coinlab/condition_search")}
+          style={{
+            padding: "8px 18px",
+            borderRadius: 8,
+            background: "#ffecb3",
+            border: "1px solid #ff9800",
+            color: "#ff9800",
+            fontWeight: 700,
+            fontSize: 15,
+            cursor: "pointer"
+          }}
+        >
+          🧠 조건검색 (실전 HTS)
+        </button>
+        <button
+          onClick={() => navigate("/coinlab/coin_data_manager")}
+          style={{
+            padding: "8px 18px",
+            borderRadius: 8,
+            background: "#e3f2fd",
+            border: "1px solid #1976d2",
+            color: "#1976d2",
+            fontWeight: 700,
+            fontSize: 15,
+            cursor: "pointer"
         }}
       >
-        🛠️ 테마 매핑 에디터
+        📂 종목데이터관리
       </button>
+      </div>
+
 
       {/* 모달/팝업 형식 */}
       {showEditor && (

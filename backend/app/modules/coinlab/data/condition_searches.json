@@ -1,0 +1,175 @@
+[
+  {
+    "name": "상승3%AND거래대금10억",
+    "combo": [
+      {
+        "comboObj": {
+          "name": "e1",
+          "combo": [
+            {
+              "key": "return",
+              "label": "상승률",
+              "op": ">",
+              "value": "3",
+              "unit": "%"
+            }
+          ]
+        },
+        "op": ""
+      },
+      {
+        "comboObj": {
+          "name": "e2",
+          "combo": [
+            {
+              "key": "volume",
+              "label": "거래대금",
+              "op": ">",
+              "value": "1000000000",
+              "unit": "₩"
+            }
+          ]
+        },
+        "op": "AND"
+      }
+    ]
+  },
+  {
+    "name": "상승3%ORRSI30이상",
+    "combo": [
+      {
+        "comboObj": {
+          "name": "e1",
+          "combo": [
+            {
+              "key": "return",
+              "label": "상승률",
+              "op": ">",
+              "value": "3",
+              "unit": "%"
+            }
+          ]
+        },
+        "op": ""
+      },
+      {
+        "comboObj": {
+          "name": "e3",
+          "combo": [
+            {
+              "key": "rsi",
+              "label": "RSI(14)",
+              "op": ">",
+              "value": "30",
+              "unit": ""
+            }
+          ]
+        },
+        "op": "OR"
+      }
+    ]
+  },
+  {
+    "name": "상승3%+거래대금10억+RSI30이상",
+    "combo": [
+      {
+        "comboObj": {
+          "name": "e1",
+          "combo": [
+            {
+              "key": "return",
+              "label": "상승률",
+              "op": ">",
+              "value": "3",
+              "unit": "%"
+            }
+          ]
+        },
+        "op": ""
+      },
+      {
+        "comboObj": {
+          "name": "e2",
+          "combo": [
+            {
+              "key": "volume",
+              "label": "거래대금",
+              "op": ">",
+              "value": "1000000000",
+              "unit": "₩"
+            }
+          ]
+        },
+        "op": "AND"
+      },
+      {
+        "comboObj": {
+          "name": "e3",
+          "combo": [
+            {
+              "key": "rsi",
+              "label": "RSI(14)",
+              "op": ">",
+              "value": "30",
+              "unit": ""
+            }
+          ]
+        },
+        "op": "AND"
+      }
+    ]
+  },
+  {
+    "name": "5/20or상승3%or거래대금10억",
+    "combo": [
+      {
+        "comboObj": {
+          "name": "5/20골든크로스",
+          "combo": [
+            {
+              "key": "ma_cross",
+              "label": "이평선 크로스",
+              "op": "상향돌파",
+              "value": {
+                "ma1": "5",
+                "ma2": "20"
+              },
+              "unit": ""
+            }
+          ]
+        },
+        "op": ""
+      },
+      {
+        "comboObj": {
+          "name": "상승률3%",
+          "combo": [
+            {
+              "key": "return",
+              "label": "상승률",
+              "op": ">",
+              "value": "3",
+              "unit": "%"
+            }
+          ]
+        },
+        "op": "OR"
+      },
+      {
+        "comboObj": {
+          "name": "거래대금10억",
+          "combo": [
+            {
+              "key": "volume",
+              "label": "거래대금",
+              "op": ">",
+              "value": "1000000000",
+              "unit": "₩"
+            }
+          ]
+        },
+        "op": "OR"
+      }
+    ]
+  }
+]
