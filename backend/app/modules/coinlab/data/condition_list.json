@@ -1,0 +1,53 @@
+[
+  {
+    "name": "상승률3%",
+    "combo": [
+      {
+        "key": "return",
+        "label": "상승률",
+        "op": ">",
+        "value": "3",
+        "unit": "%"
+      }
+    ]
+  },
+  {
+    "name": "거래대금10억",
+    "combo": [
+      {
+        "key": "volume",
+        "label": "거래대금",
+        "op": ">",
+        "value": "1000000000",
+        "unit": "₩"
+      }
+    ]
+  },
+  {
+    "name": "5/20골든크로스",
+    "combo": [
+      {
+        "key": "ma_cross",
+        "label": "이평선 크로스",
+        "op": "상향돌파",
+        "value": {
+          "ma1": "5",
+          "ma2": "20"
+        },
+        "unit": ""
+      }
+    ]
+  },
+  {
+    "name": "RSI30이상",
+    "combo": [
+      {
+        "key": "rsi",
+        "label": "RSI(14)",
+        "op": ">",
+        "value": "30",
+        "unit": ""
+      }
+    ]
+  }
+]

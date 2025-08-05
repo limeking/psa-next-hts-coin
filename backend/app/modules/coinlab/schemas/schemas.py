@@ -2,7 +2,14 @@
 # backend/app/modules/coinlab/schemas.py
 
 from pydantic import BaseModel
+from typing import List
 
 class MarketOption(BaseModel):
     short: int
     long: int
+
+
+class BulkRequest(BaseModel):
+    symbols: List[str]
+    interval: str
+    year: str

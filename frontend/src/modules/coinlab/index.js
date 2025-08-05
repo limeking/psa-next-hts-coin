@@ -6,6 +6,8 @@ import CoinLabRunPage from "./pages/CoinLabRunPage";
 import CoinLabStrategyPage from "./pages/CoinLabStrategyPage";
 import CoinlabPage from './pages/CoinlabPage';
 import HTSDashboardPage from './pages/HTSDashboardPage';
+import ConditionSearchPage from "./pages/ConditionSearchPage";
+import CoinDataManagerPage from "./pages/CoinDataManagerPage";
 
 export default function CoinlabRouter() {
   return (
@@ -13,8 +15,10 @@ export default function CoinlabRouter() {
       <Route index element={<CoinLabMainPage />} />
       <Route path="run" element={<CoinLabRunPage />} />
       <Route path="strategy" element={<CoinLabStrategyPage />} />
-      <Route path="/coinlab" element={<CoinlabPage />} />
-      <Route path="/dashboard" element={<HTSDashboardPage />} />
+      <Route path="coinlab" element={<CoinlabPage />} />
+      <Route path="dashboard" element={<HTSDashboardPage />} />
+      <Route path="condition_search" element={<ConditionSearchPage />} />
+      <Route path="coin_data_manager" element={<CoinDataManagerPage />} />
       {/* 추가 페이지 필요시 계속 확장 */}
     </Routes>
   );
