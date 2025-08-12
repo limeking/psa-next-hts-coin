@@ -1,17 +1,5 @@
 [
   {
-    "name": "상승률3%",
-    "combo": [
-      {
-        "key": "return",
-        "label": "상승률",
-        "op": ">",
-        "value": "3",
-        "unit": "%"
-      }
-    ]
-  },
-  {
     "name": "거래대금10억",
     "combo": [
       {
@@ -47,6 +35,42 @@
         "op": ">",
         "value": "30",
         "unit": ""
+      }
+    ]
+  },
+  {
+    "name": "상승률10%이상",
+    "combo": [
+      {
+        "key": "return",
+        "label": "상승률",
+        "op": ">",
+        "value": "10",
+        "unit": "%"
+      }
+    ]
+  },
+  {
+    "name": "전일대비거래량150%이상",
+    "combo": [
+      {
+        "key": "volume_change_rate",
+        "label": "전일대비 거래량(%)",
+        "op": ">",
+        "value": "150",
+        "unit": "%"
+      }
+    ]
+  },
+  {
+    "name": "전일대비거래량50%이상",
+    "combo": [
+      {
+        "key": "volume_change_rate",
+        "label": "전일대비 거래량(%)",
+        "op": ">",
+        "value": "50",
+        "unit": "%"
       }
     ]
   }

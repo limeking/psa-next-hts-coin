@@ -1,16 +1,19 @@
 # backend/app/modules/coinlab/routers/coinlab.py
 
-from fastapi import APIRouter, Body, Request, Query, BackgroundTasks
-from fastapi.responses import Response   
+from fastapi import APIRouter, Body, Request, Query, BackgroundTasks, HTTPException
+from fastapi.responses import Response, JSONResponse
 import json
 import os
+import re
 import uuid
-from typing import List
+from typing import List, Dict, Any
 import requests
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import math
 import tempfile, shutil
+import concurrent.futures
 from ..schemas.schemas import MarketOption, BulkRequest
 from ..services.utils import save_options, load_options
 from .coin_data import get_coin_data_list, download_coin_data, update_coin_data
@@ -20,12 +23,44 @@ router = APIRouter(prefix="/coinlab")
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
+
 DATA_FILE = DATA_DIR / "condition_searches.json"
 CONDITION_LIST_FILE = DATA_DIR / "condition_list.json"
 
 base_dir = "/data"
 if not os.path.exists(base_dir):
     os.makedirs(base_dir, exist_ok=True)
+
+DATA_ROOT = Path("/data")
+
+WATCHLIST_FILE = DATA_DIR / "watchlist.json"
+WATCHLISTS_DIR = DATA_DIR / "watchlists" # 여러개 이름 저장용
+WATCHLISTS_DIR.mkdir(parents=True, exist_ok=True)
+
+SAFE_NAME = re.compile(r"^[A-Za-z0-9가-힣 _\-\(\)]{1,64}$")
+
+
+def _validate_watchlist_name(name: str | None):
+    if name and not SAFE_NAME.match(name):
+        # JSONResponse로 해도 되지만, FastAPI는 예외가 더 간결
+        raise HTTPException(status_code=400, detail="invalid name")
+
+
+def _get_volume_change_rate(df):
+    cols = {c.lower(): c for c in df.columns}
+    vcol = cols.get("volume") or cols.get("acc_trade_volume_24h") or cols.get("acc_trade_volume") or cols.get("vol")
+    if not vcol or len(df) < 2:
+        return None
+    try:
+        prev_volume = float(df.iloc[-2][vcol])
+        now_volume  = float(df.iloc[-1][vcol])
+        if prev_volume and prev_volume != 0:
+            vcr = (now_volume - prev_volume) / prev_volume * 100.0
+            return None if math.isnan(vcr) else round(vcr, 2)
+    except Exception:
+        pass
+    return None
+
 
 #  시장상태 옵션 저장
 @router.get("/market/options")
@@ -268,17 +303,6 @@ def bulk_delete_api(
     )
     return {"status": "started", "status_id": status_id}
 
-# [진행상황 조회]
-@router.get("/bulk_status")
-def get_bulk_status(status_id: str):
-    status_file = f"/data/operation_status/{status_id}.json"
-    import json
-    if not os.path.exists(status_file):
-        return {"status": "not_found"}
-    with open(status_file, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
 
 # --- 일괄 업데이트 (프론트 bulk만 사용!) ---
 @router.post("/bulk_update")
@@ -407,3 +431,372 @@ def coin_data_state():
                     year = f[:-8]
                     result[symbol][interval][year] = True
     return result
+
+
+@router.post("/condition_search_run")
+async def condition_search_run(request: Request):
+    """
+    body 예시:
+    {
+      "combos": [...],      # 조건조합 (ConditionComboBuilder 포맷)
+      "interval": "1d"
+    }
+    """
+    body = await request.json()
+    combos = body.get("combos", [])
+    interval = body.get("interval", "1d")
+    realtime = bool(body.get("realtime", False))
+    symbols_filter = body.get("symbols", None) 
+    # --- add: orderbook depth 옵션 (기본 5) ---
+    try:
+        _d = int(body.get("orderbook_depth", 5))
+    except Exception:
+        _d = 5
+    orderbook_depth = _d if _d in (5, 10, 20, 30) else 5
+    if isinstance(symbols_filter, list):
+        symbols_filter = set([str(s) for s in symbols_filter])
+
+    base_dir = "/data"
+    result = []
+    if not os.path.exists(base_dir):
+        return {"coins": []}
+
+    if realtime:
+        # 1) 심볼 목록 확보
+        symbols_path = "/data/krw_symbols.json"
+        if os.path.exists(symbols_path):
+            with open(symbols_path, "r", encoding="utf-8") as f:
+                symbols = json.load(f)
+        else:
+            symbols = []
+
+        # 2) Ticker ALL_KRW 한 번 호출 (등락률/거래대금)
+        try:
+            tkr = requests.get("https://api.bithumb.com/public/ticker/ALL_KRW", timeout=3).json().get("data", {})
+        except Exception:
+            tkr = {}
+        
+        # 관심종목이 오면 그걸로 제한
+        if symbols_filter:
+            symbols = [s for s in symbols if s in symbols_filter]
+
+        if not symbols:
+            symbols = [s + "_KRW" for s in tkr.keys() if s and s != "date"]
+        if symbols_filter:
+            symbols = [s for s in symbols if s in symbols_filter]
+        
+        # ALL_KRW 로 채운 뒤에도 필터 재적용
+        
+        if symbols_filter:
+            symbols = [s for s in symbols if s in symbols_filter]
+
+        def build_item(sym: str):
+            base = {"symbol": sym}
+            key = sym.replace("_KRW", "")
+            tv = tkr.get(key, {}) if isinstance(tkr.get(key, {}), dict) else {}
+            # 등락률(%)
+            try:
+                base["return"] = float(tv.get("fluctate_rate_24H", None))
+            except Exception:
+                base["return"] = None
+            # 거래대금(원)
+            try:
+                base["volume"] = float(tv.get("acc_trade_value_24H", None))
+            except Exception:
+                base["volume"] = None
+            try:
+                base["close"] = float(tv.get("closing_price", None))
+            except Exception:
+                base["close"] = None
+            # 호가창 합계/비율
+            ob = _fetch_orderbook_totals(sym, depth=orderbook_depth, timeout=1.5)
+            base.update(ob)
+            return base if match_combo(base, combos) else None
+
+        result = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            futures = [ex.submit(build_item, s) for s in symbols]
+            for fut in concurrent.futures.as_completed(futures):
+                item = fut.result()
+                if item:
+                    result.append(item)
+
+        # 기본 정렬: 등락률 내림차순 (기존 규칙 유지)
+        result.sort(key=lambda x: (x.get("return") is None, x.get("return", 0)), reverse=True)
+        return {"coins": result}
+
+    for symbol in os.listdir(base_dir):
+        if symbols_filter and symbol not in symbols_filter:
+            continue
+        interval_dir = os.path.join(base_dir, symbol, interval)
+        if not os.path.isdir(interval_dir):
+            continue
+
+        # 연도별 parquet 중 최신 파일 찾기 (파일명 정렬 기준)
+        parquet_files = sorted(
+            [f for f in os.listdir(interval_dir) if f.endswith(".parquet") and f[:-8].isdigit()],
+            reverse=True
+        )
+        if not parquet_files:
+            continue
+        latest_file = parquet_files[0]  # 예: "2024.parquet"
+
+        fpath = os.path.join(interval_dir, latest_file)
+        try:
+            df = pd.read_parquet(fpath)
+            last_row = df.iloc[-1].to_dict()
+            last_row["symbol"] = symbol
+
+            # 1. return 값이 있으면 강제로 float 변환(문자열 등 안전 처리)
+            if "return" in last_row:
+                try:
+                    last_row["return"] = float(last_row["return"])
+                    if math.isnan(last_row["return"]):
+                        last_row["return"] = None
+                except Exception:
+                    last_row["return"] = None
+
+            # 2. 등락률(return) 자동 계산 보정 (없거나 None일 때만)
+            if "return" not in last_row or last_row["return"] is None:
+                if len(df) >= 2 and "close" in df.columns:
+                    prev_close = df.iloc[-2]["close"]
+                    now_close = df.iloc[-1]["close"]
+                    try:
+                        if prev_close and now_close and prev_close != 0:
+                            val = (now_close - prev_close) / prev_close * 100
+                            if math.isnan(val):
+                                last_row["return"] = None
+                            else:
+                                last_row["return"] = round(float(val), 2)
+                        else:
+                            last_row["return"] = None
+                    except Exception:
+                        last_row["return"] = None
+                else:
+                    last_row["return"] = None
+            # ⬆️
+            # 3. 전일대비 거래량 증감률(%) 계산: ((금일 - 정일) / 전일) * 100
+            try:
+                cols = {c.lower(): c for c in df.columns}
+                vcol = cols.get("volume") or cols.get("acc_trade_volume_24h") or cols.get("acc_trade_volume") or cols.get("vol")
+                if vcol and len(df) >= 2:
+                    prev_volume = float(df.iloc[-2][vcol])
+                    now_volume  = float(df.iloc[-1][vcol])
+                    if prev_volume and prev_volume != 0:
+                        vcr = (now_volume - prev_volume) / prev_volume * 100.0
+                        last_row["volume_change_rate"] = _get_volume_change_rate(df)
+                    else:
+                        last_row["volume_change_rate"] = _get_volume_change_rate(df)
+                else:
+                    last_row["volume_change_rate"] = _get_volume_change_rate(df)
+            except Exception:
+                last_row["volume_change_rate"] = _get_volume_change_rate(df)
+        except Exception:
+            continue
+        if match_combo(last_row, combos):
+            result.append(last_row)
+    return {"coins": result}
+
+
+def match_combo(item, combos: list[dict]):
+    """
+    combos: [{ key, op, value, ... }]
+    item: { symbol, open, high, ... }
+    ConditionComboBuilder.js의 포맷에 맞춰 해석
+    """
+    for cond in combos:
+        k, op, v = cond["key"], cond["op"], cond["value"]
+        if k.startswith("ma_"):  # 이평선계산 등 추가
+            continue
+        vi = item.get(k)
+        # None, 빈값, NaN 방지
+        if vi is None or v is None or str(vi).strip() == "" or str(v).strip() == "":
+            return False
+        # 수치형 연산은 float 변환 예외 처리
+        if op in {">", "<", ">=", "<="}:
+            try:
+                vi_f = float(vi)
+                v_f = float(v)
+            except Exception:
+                return False
+            if op == ">" and not (vi_f > v_f): return False
+            if op == "<" and not (vi_f < v_f): return False
+            if op == ">=" and not (vi_f >= v_f): return False
+            if op == "<=" and not (vi_f <= v_f): return False
+        elif op == "=":
+            if str(vi) != str(v): return False
+        # 필요시 기타 연산 추가
+    return True
+
+
+def _to_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return 0.0
+
+def _fetch_orderbook_totals(symbol: str, *, depth: int = 5, timeout: float = 1.5) -> dict:
+    """
+    빗썸 호가창에서 총매수/총매도 잔량 합계, 잔량비, 최우선 잔량(매수/매도) 반환
+    depth: 5/10/20/30 중 하나
+    """
+    depth = depth if depth in (5, 10, 20, 30) else 5
+    url = f"https://api.bithumb.com/public/orderbook/{symbol}?count={depth}"
+    try:
+        r = requests.get(url, timeout=timeout)
+        r.raise_for_status()
+        data = (r.json() or {}).get("data") or {}
+        bids = data.get("bids") or []
+        asks = data.get("asks") or []
+
+        # 총 잔량(빗썸이 제공하면 그 값, 없으면 합산)
+        total_bid = _to_float(data.get("total_bid_size") or 0.0) or sum(_to_float(b.get("quantity")) for b in bids)
+        total_ask = _to_float(data.get("total_ask_size") or 0.0) or sum(_to_float(a.get("quantity")) for a in asks)
+
+        # 최우선 잔량: 가격 기준으로 매수는 최댓값, 매도는 최솟값에서 quantity 사용
+        best_bid = max(bids, key=lambda b: _to_float(b.get("price")), default=None)
+        best_ask = min(asks, key=lambda a: _to_float(a.get("price")), default=None)
+        best_bid_size = _to_float(best_bid.get("quantity")) if best_bid else None
+        best_ask_size = _to_float(best_ask.get("quantity")) if best_ask else None
+
+        return {
+            "total_bid_size": total_bid,
+            "total_ask_size": total_ask,
+            "best_bid_size": best_bid_size,
+            "best_ask_size": best_ask_size,
+            "orderbook_ratio": (total_bid / total_ask) if total_ask else None,
+            "orderbook_depth": depth,
+        }
+    except Exception:
+        # TODO: logger.exception("orderbook fetch failed")
+        return {
+            "total_bid_size": None,
+            "total_ask_size": None,
+            "best_bid_size": None,
+            "best_ask_size": None,
+            "orderbook_ratio": None,
+            "orderbook_depth": depth,
+        }
+
+
+def _latest_parquet_path(symbol: str, interval: str) -> Path:
+  """
+  /data/{SYMBOL}/{interval}/{year}.parquet 중 가장 최신 year 파일 반환
+  """
+  base = DATA_ROOT / symbol / interval
+  if not base.exists():
+    raise FileNotFoundError(f"No data dir: {base}")
+  files = sorted(base.glob("*.parquet"))
+  if not files:
+    raise FileNotFoundError(f"No parquet files in: {base}")
+  # 파일명이 2024.parquet, 2025.parquet 형태라고 가정 → 최신 연도 선택
+  # 정렬되어 있으니 마지막이 최신
+  return files[-1]
+
+@router.get("/candles")
+def get_candles(
+    symbol: str = Query(..., description="예: BTC_KRW"),
+    interval: str = Query(..., regex="^(1d|1h|15m|5m)$"),
+    limit: int = Query(500, ge=50, le=5000),
+) -> Dict[str, Any]:
+  """
+  최신 parquet 1개에서 tail(limit)만 읽어 캔들 반환
+  - time: epoch seconds (int)
+  - open, high, low, close, volume: float
+  """
+  try:
+    p = _latest_parquet_path(symbol, interval)
+  except FileNotFoundError as e:
+    raise HTTPException(status_code=404, detail=str(e))
+
+  try:
+    df = pd.read_parquet(p)
+  except Exception as e:
+    raise HTTPException(status_code=500, detail=f"Failed to read parquet: {e}")
+
+  # 컬럼 정규화: time/open/high/low/close/volume
+  cols = {c.lower(): c for c in df.columns}
+  # 허용 가능한 키 탐색
+  tcol = cols.get("time") or cols.get("timestamp") or "time"
+  ocol = cols.get("open") or "open"
+  hcol = cols.get("high") or "high"
+  lcol = cols.get("low") or "low"
+  ccol = cols.get("close") or "close"
+  vcol = cols.get("volume") or cols.get("vol") or "volume"
+
+  # 시간 처리
+  t = pd.to_datetime(df[tcol], utc=True, errors="coerce")
+  if t.isna().all():
+    raise HTTPException(status_code=500, detail="Invalid time column")
+
+  # tail(limit) + 필요한 컬럼만
+  sdf = pd.DataFrame({
+    "time": (t.astype("int64") // 10**9),  # to epoch seconds (FutureWarning 제거)
+    "open": pd.to_numeric(df[ocol], errors="coerce"),
+    "high": pd.to_numeric(df[hcol], errors="coerce"),
+    "low":  pd.to_numeric(df[lcol], errors="coerce"),
+    "close":pd.to_numeric(df[ccol], errors="coerce"),
+    "volume": pd.to_numeric(df[vcol], errors="coerce") if vcol in df.columns else 0.0,
+  }).dropna().tail(limit)
+
+  candles: List[Dict[str, Any]] = sdf.to_dict(orient="records")
+  if not candles:
+    raise HTTPException(status_code=404, detail="No candle rows")
+
+  return {
+    "symbol": symbol,
+    "interval": interval,
+    "count": len(candles),
+    "candles": candles,
+  }
+
+
+# 기존 get_watchlist 교체
+@router.get("/watchlist")
+def get_watchlist(name: str | None = Query(None)):
+    _validate_watchlist_name(name)
+    if name:
+        path = WATCHLISTS_DIR / f"{name}.json"
+        if not path.exists():
+            return {"symbols": []}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {"symbols": data.get("symbols", [])}
+        except Exception:
+            return {"symbols": []}
+    # 기본(공용)
+    if not WATCHLIST_FILE.exists():
+        return {"symbols": []}
+    try:
+        with open(WATCHLIST_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return {"symbols": data.get("symbols", [])}
+    except Exception:
+        return {"symbols": []}
+
+# 기존 post_watchlist 교체
+@router.post("/watchlist")
+def post_watchlist(payload: dict = Body(...), name: str | None = Query(None)):
+    _validate_watchlist_name(name)
+    symbols = [str(s) for s in payload.get("symbols", []) if s]
+    symbols = list(dict.fromkeys(symbols))  # 중복 제거
+    if name:
+        path = WATCHLISTS_DIR / f"{name}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"symbols": symbols}, f, ensure_ascii=False, indent=2)
+        return {"ok": True, "name": name, "count": len(symbols)}
+    WATCHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
+        json.dump({"symbols": symbols}, f, ensure_ascii=False, indent=2)
+    return {"ok": True, "count": len(symbols)}
+
+
+@router.get("/watchlist_names")
+def get_watchlist_names():
+    names = []
+    if WATCHLISTS_DIR.exists():
+        for p in WATCHLISTS_DIR.glob("*.json"):
+            names.append(p.stem)
+    return {"names": sorted(names)}
