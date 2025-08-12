@@ -5,6 +5,7 @@ const ALL_CONDITIONS = [
   { key: "return", label: "상승률", inputType: "number", opList: [">", "<", ">=", "<="], unit: "%" },
   { key: "volume", label: "거래대금", inputType: "number", opList: [">", "<", ">=", "<="], unit: "₩" },
   { key: "rsi", label: "RSI(14)", inputType: "number", opList: [">", "<"], unit: "" },
+  { key: "volume_change_rate", label: "전일대비 거래량(%)", inputType: "number", opList: [">", "<", ">=", "<="], unit: "%" },
   {
     key: "ma_cross",
     label: "이평선 크로스",
@@ -20,6 +21,9 @@ const ALL_CONDITIONS = [
     maOptions: [5, 20, 60, 120]
   },
   { key: "theme", label: "테마", inputType: "select", opList: ["="], options: ["AI", "DeFi", "게임", "플랫폼"], unit: "" },
+  { key: "total_bid_size", label: "총매수잔량", inputType: "number", opList: [">", "<", ">=", "<="], unit: "" },
+  { key: "total_ask_size", label: "총매도잔량", inputType: "number", opList: [">", "<", ">=", "<="], unit: "" },
+  { key: "orderbook_ratio", label: "매수/매도 잔량비", inputType: "number", opList: [">", "<", ">=", "<="], unit: "" },
 ];
 
 export default function ConditionComboBuilder({ value = [], onChange }) {
@@ -105,6 +109,18 @@ export default function ConditionComboBuilder({ value = [], onChange }) {
 
   // 조건식 자연어 표시 함수 (특히 ma_cross/ma_gap)
   function getDisplay(c) {
+    if (c.key === "volume_change_rate") {
+      return `전일대비 거래량 ${c.op} ${c.value}%`;
+    }
+    if (c.key === "total_bid_size") {
+      return `총매수잔량 ${c.op} ${c.value}`;
+    }
+    if (c.key === "total_ask_size") {
+      return `총매도잔량 ${c.op} ${c.value}`;
+    }
+    if (c.key === "orderbook_ratio") {
+      return `매수/매도 잔량비 ${c.op} ${c.value}`;
+    }
     if (c.key === "ma_cross") {
       return `${c.value.ma1}이평선이 ${c.value.ma2}이평선을 ${c.op}`;
     }
