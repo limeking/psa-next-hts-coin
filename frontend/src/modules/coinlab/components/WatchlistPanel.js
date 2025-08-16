@@ -1,10 +1,14 @@
 import React from "react";
-export default function WatchlistPanel({ symbols=[], onRemove, onSave, title="관심종목(공용)" }) {
+export default function WatchlistPanel({ symbols=[], onRemove, onSave, title="관심종목(공용)", hideSave=false, }) {
   return (
     <div style={{ background:"#fff", borderRadius:12, padding:12, border:"1px solid #eee", minWidth:260 }}>
       <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
         <strong>{title}</strong>
-        <button onClick={onSave} style={{ padding:"4px 10px", borderRadius:8 }}>저장</button>
+        {!hideSave && onSave && (
+        <button onClick={() => onSave(symbols)}>
+          저장
+        </button>
+        )}
       </div>
       {symbols.length === 0 && <div style={{ color:"#aaa" }}>비어있음</div>}
       <ul style={{ listStyle:"none", padding:0, margin:0 }}>

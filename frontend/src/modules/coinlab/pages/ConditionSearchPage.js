@@ -9,11 +9,15 @@ import { runConditionSearch, fetchCandles } from "../services/coinApi";
 import WatchlistPanel from "../components/WatchlistPanel";
 import useWatchlist from "../hooks/useWatchlist";
 
+
 const dummyCoinList = [
   { symbol: "BTC_KRW", return: 3.2, volume: 7000000000, rsi: 55, ma5: 45000, ma20: 43000, ma60: 40000, ma120: 38000, theme: "플랫폼", close: 45000 },
   { symbol: "HIPPO_KRW", return: 7.5, volume: 180000000, rsi: 27, ma5: 105, ma20: 98, ma60: 91, ma120: 80, theme: "AI", close: 105 },
   { symbol: "ETH_KRW", return: 1.2, volume: 4000000000, rsi: 62, ma5: 2900, ma20: 2700, ma60: 2400, ma120: 2100, theme: "DeFi", close: 2900 },
 ];
+
+
+
 
 function filterByComboObj(comboObj, data) {
   const combo = comboObj?.combo || [];
@@ -516,6 +520,7 @@ export default function ConditionSearchPage() {
             onSave={saveWatch}
             title="관심종목(공용)"
             loading={wlLoading}
+            hideSave
           />
         </div>
 

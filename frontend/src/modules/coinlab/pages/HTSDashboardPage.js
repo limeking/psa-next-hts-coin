@@ -45,7 +45,7 @@ export default function HTSDashboardPage() {
             color: "#ff9800",
             fontWeight: 700,
             fontSize: 15,
-            cursor: "pointer"
+            cursor: "pointer",
           }}
         >
           🛠️ 테마 매핑 에디터
@@ -60,7 +60,7 @@ export default function HTSDashboardPage() {
             color: "#ff9800",
             fontWeight: 700,
             fontSize: 15,
-            cursor: "pointer"
+            cursor: "pointer",
           }}
         >
           🧠 조건검색 (실전 HTS)
@@ -75,11 +75,26 @@ export default function HTSDashboardPage() {
             color: "#1976d2",
             fontWeight: 700,
             fontSize: 15,
-            cursor: "pointer"
-        }}
-      >
-        📂 종목데이터관리
-      </button>
+            cursor: "pointer",
+          }}
+        >
+          📂 종목데이터관리
+        </button>
+        <button
+          onClick={() => navigate("/coinlab/watchlist")}
+          style={{
+            padding: "8px 18px",
+            borderRadius: 8,
+            background: "#e3f2fd",
+            border: "1px solid #1976d2",
+            color: "#1976d2",
+            fontWeight: 700,
+            fontSize: 15,
+            cursor: "pointer",
+          }}
+        >
+          ⭐ 관심종목
+        </button>
       </div>
 
 
