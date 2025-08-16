@@ -37,7 +37,8 @@ WATCHLIST_FILE = DATA_DIR / "watchlist.json"
 WATCHLISTS_DIR = DATA_DIR / "watchlists" # 여러개 이름 저장용
 WATCHLISTS_DIR.mkdir(parents=True, exist_ok=True)
 
-SAFE_NAME = re.compile(r"^[A-Za-z0-9가-힣 _\-\(\)]{1,64}$")
+SAFE_NAME = re.compile(r"^[A-Za-z0-9가-힣 _\-\(\)%]{1,64}$")
+
 
 
 def _validate_watchlist_name(name: str | None):
@@ -799,4 +800,20 @@ def get_watchlist_names():
     if WATCHLISTS_DIR.exists():
         for p in WATCHLISTS_DIR.glob("*.json"):
             names.append(p.stem)
+
+
     return {"names": sorted(names)}
+
+
+
+@router.delete("/watchlist")
+def delete_watchlist(name: str = Query(..., description="삭제할 관심종목 이름")):
+    _validate_watchlist_name(name)
+    path = WATCHLISTS_DIR / f"{name}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="watchlist not found")
+    try:
+        path.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"delete failed: {e}")
+    return {"ok": True, "deleted": name}
