@@ -16,6 +16,12 @@ const dummyCoinList = [
   { symbol: "ETH_KRW", return: 1.2, volume: 4000000000, rsi: 62, ma5: 2900, ma20: 2700, ma60: 2400, ma120: 2100, theme: "DeFi", close: 2900 },
 ];
 
+const SAFE = /^[A-Za-z0-9가-힣 _\-\(\)%]{1,64}$/;
+
+function sanitizeWatchlistName(name) {
+  return name.replace(/[\/\\:*?"<>|]/g, "-").slice(0, 64);
+}
+
 
 
 
@@ -369,35 +375,46 @@ export default function ConditionSearchPage() {
   const handleSaveStage1ToWatchlist = async () => {
     if (!stage1Symbols.length) return alert("저장할 1차 결과가 없습니다.");
     try {
-      const name = (watchlistName || "").trim();
+      const raw = (watchlistName || "").trim();
+      const clean = sanitizeWatchlistName(raw);
   
-      // 1) 공용 관심종목 저장
+      // 1) 공용 관심종목 저장 (기존 유지)
       await saveWatch(stage1Symbols);
   
-      // 2) 이름으로도 저장 (백엔드가 ?name= 지원해야 작동)
-      if (name) {
-        await fetch(`/api/coinlab/watchlist?name=${encodeURIComponent(name)}`, {
+      // 2) 이름 저장: name이 있을 때만, 그리고 형식/길이 검증 통과 시
+      if (clean) {
+        if (!SAFE.test(clean)) {
+          alert("이름에는 한글/영문/숫자/공백/_-()% 만 사용할 수 있어요. (최대 64자)");
+          return;
+        }
+        const res = await fetch(`/api/coinlab/watchlist?name=${encodeURIComponent(clean)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbols: stage1Symbols })
+          body: JSON.stringify({ symbols: stage1Symbols }),
         });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`이름 저장 실패 (${res.status}): ${txt}`);
+        }
+  
         // 저장 후 이름 목록 갱신
         try {
           const r = await fetch("/api/coinlab/watchlist_names");
           const j = await r.json();
           setWatchlistNames(j?.names || []);
-        } catch {}
+        } catch (_) {}
       }
   
       // ✅ 입력칸 비우기 + 플래시 메시지
       setWatchlistName("");
-      setFlash(`저장 완료: ${name || "공용 관심종목"} (${stage1Symbols.length}종목)`);
+      setFlash(`저장 완료: ${clean || "공용 관심종목"} (${stage1Symbols.length}종목)`);
       setFlashType("success");
       setTimeout(() => setFlash(""), 2200);
     } catch (e) {
       alert("저장 실패: " + (e?.message || e));
     }
   };
+  
   
 
   const handleLoadNamedWatch = async () => {

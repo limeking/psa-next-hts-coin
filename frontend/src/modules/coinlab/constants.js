@@ -24,3 +24,16 @@ export function getYearsForInterval(interval) {
     return [thisYear.toString()];
   }
 }
+
+
+// 기간 프리셋 (일봉 기준)
+export const BACKTEST_PERIOD_PRESETS = [
+  { key: "all", label: "전체기간", months: null }, // null = 전체
+  { key: "36m", label: "최근 3년", months: 36 },
+  { key: "24m", label: "최근 2년", months: 24 },
+  { key: "12m", label: "최근 1년", months: 12 },
+  { key: "6m",  label: "최근 6개월", months: 6 },
+  { key: "3m",  label: "최근 3개월", months: 3 },
+  { key: "2m",  label: "최근 2개월", months: 2 },
+  { key: "1m",  label: "최근 1개월", months: 1 },
+];
