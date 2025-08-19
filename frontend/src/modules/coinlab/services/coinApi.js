@@ -16,3 +16,18 @@ export async function runConditionSearch(payload, signal) {
     return res.json();
   }
   
+
+  // ✅ 백테스트 시나리오 실행: 최소한의 페이로드만 전송 (심볼/기간/스텝 정의)
+export async function runBacktestScenario(payload, signal) {
+    const res = await fetch('/api/coinlab/backtest/run_scenario', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal
+    });
+    if (!res.ok) {
+      const msg = await res.text().catch(() => "");
+      throw new Error(`백테스트 실행 실패: ${msg || res.status}`);
+    }
+    return res.json();
+}

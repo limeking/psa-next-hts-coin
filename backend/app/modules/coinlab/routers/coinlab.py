@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Body, Request, Query, BackgroundTasks, HTTPException
 from fastapi.responses import Response, JSONResponse
+import time,logging
 import json
 import os
 import re
@@ -18,8 +19,13 @@ from ..schemas.schemas import MarketOption, BulkRequest
 from ..services.utils import save_options, load_options
 from .coin_data import get_coin_data_list, download_coin_data, update_coin_data
 from ..services.coin_data_service import delete_coin_data, bulk_delete, bulk_update, bulk_download
+from ..services.backtest_service import run_scenario_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/coinlab")
+
+RUNNING_FLAG = False   # 파일 상단 전역에 1회 선언
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
@@ -33,9 +39,10 @@ if not os.path.exists(base_dir):
 
 DATA_ROOT = Path("/data")
 
-WATCHLIST_FILE = DATA_DIR / "watchlist.json"
-WATCHLISTS_DIR = DATA_DIR / "watchlists" # 여러개 이름 저장용
+WATCHLISTS_DIR = Path("/data") / "watchlists"
 WATCHLISTS_DIR.mkdir(parents=True, exist_ok=True)
+WATCHLIST_FILE = WATCHLISTS_DIR / "_default.json"
+
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9가-힣 _\-\(\)%]{1,64}$")
 
@@ -478,18 +485,15 @@ async def condition_search_run(request: Request):
             tkr = {}
         
         # 관심종목이 오면 그걸로 제한
-        if symbols_filter:
-            symbols = [s for s in symbols if s in symbols_filter]
-
+        # (중복 필터링 제거) 비어 있으면 ALL_KRW로 채우고, 필터는 마지막에 한 번만 적용
         if not symbols:
             symbols = [s + "_KRW" for s in tkr.keys() if s and s != "date"]
+
         if symbols_filter:
-            symbols = [s for s in symbols if s in symbols_filter]
-        
-        # ALL_KRW 로 채운 뒤에도 필터 재적용
-        
-        if symbols_filter:
-            symbols = [s for s in symbols if s in symbols_filter]
+            # set 으로 한 번만 필터링 (빠르고 간결)
+            filt = symbols_filter if isinstance(symbols_filter, set) else set(map(str, symbols_filter))
+            symbols = [s for s in symbols if s in filt]
+
 
         def build_item(sym: str):
             base = {"symbol": sym}
@@ -805,6 +809,12 @@ def get_watchlist_names():
     return {"names": sorted(names)}
 
 
+@router.get("/watchlists/names")   # 새 별칭
+def get_watchlists_names_alias():
+    return get_watchlist_names()
+
+
+
 
 @router.delete("/watchlist")
 def delete_watchlist(name: str = Query(..., description="삭제할 관심종목 이름")):
@@ -817,3 +827,33 @@ def delete_watchlist(name: str = Query(..., description="삭제할 관심종목 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"delete failed: {e}")
     return {"ok": True, "deleted": name}
+
+
+
+@router.post("/backtest/run_scenario")
+def run_scenario(payload: Dict[str, Any] = Body(...)):
+    """
+    백테스트 시나리오 실행 (동시 실행 차단 + 실행시간 로깅)
+    """
+    global RUNNING_FLAG
+    if RUNNING_FLAG:
+        raise HTTPException(status_code=429, detail="Backtest already running")
+
+    t0 = time.time()
+    logger.info("run_scenario start symbols=%s steps=%s",
+                len(payload.get("symbols", [])), len(payload.get("steps", [])))
+    try:
+        RUNNING_FLAG = True
+        # 실제 서비스 호출
+        from ..services.backtest_service import run_scenario_service
+
+        resp = run_scenario_service(payload)
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("run_scenario error: %s", e)
+        raise HTTPException(status_code=500, detail=f"run_scenario failed: {e}")
+    finally:
+        RUNNING_FLAG = False
+        logger.info("run_scenario end took=%.2fs", time.time() - t0)
