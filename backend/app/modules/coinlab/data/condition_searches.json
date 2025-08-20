@@ -187,5 +187,25 @@
         "op": "AND"
       }
     ]
+  },
+  {
+    "name": "RSI30이하",
+    "combo": [
+      {
+        "comboObj": {
+          "name": "RSI30이하",
+          "combo": [
+            {
+              "key": "rsi",
+              "label": "RSI(14)",
+              "op": ">",
+              "value": "30",
+              "unit": ""
+            }
+          ]
+        },
+        "op": ""
+      }
+    ]
   }
 ]

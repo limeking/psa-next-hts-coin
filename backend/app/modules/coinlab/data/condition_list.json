@@ -27,18 +27,6 @@
     ]
   },
   {
-    "name": "RSI30이상",
-    "combo": [
-      {
-        "key": "rsi",
-        "label": "RSI(14)",
-        "op": ">",
-        "value": "30",
-        "unit": ""
-      }
-    ]
-  },
-  {
     "name": "상승률10%이상",
     "combo": [
       {
@@ -70,6 +58,42 @@
         "label": "전일대비 거래량(%)",
         "op": ">",
         "value": "50",
+        "unit": "%"
+      }
+    ]
+  },
+  {
+    "name": "RSI30이하",
+    "combo": [
+      {
+        "key": "rsi",
+        "label": "RSI(14)",
+        "op": "<",
+        "value": "30",
+        "unit": ""
+      }
+    ]
+  },
+  {
+    "name": "전일대비거래량300이상",
+    "combo": [
+      {
+        "key": "volume_change_rate",
+        "label": "전일대비 거래량(%)",
+        "op": ">",
+        "value": "300",
+        "unit": "%"
+      }
+    ]
+  },
+  {
+    "name": "전일대비거래량500이상",
+    "combo": [
+      {
+        "key": "volume_change_rate",
+        "label": "전일대비 거래량(%)",
+        "op": ">",
+        "value": "500",
         "unit": "%"
       }
     ]

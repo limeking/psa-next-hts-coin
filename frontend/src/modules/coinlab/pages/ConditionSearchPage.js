@@ -322,7 +322,7 @@ export default function ConditionSearchPage() {
     try {
       // 현재 조합 영역(= builderList)을 1단계 조건으로 사용
       const combos = builderList.flatMap(x => x?.comboObj?.combo || []);
-      const payload = { combos, interval, realtime: false };
+      const payload = { combos, interval, realtime: false, isConditionSearch: true };
       const res = await runConditionSearch(payload);
       const rows = Array.isArray(res?.coins) ? res.coins : [];
       setResult(rows);
