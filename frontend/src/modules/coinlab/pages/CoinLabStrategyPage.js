@@ -14,12 +14,19 @@ const DEFAULT_EXIT = {
   takeProfitPct: 5,
   useStopLoss: false,
   stopLossPct: 3,
-  useTimeLimit: true,
+  useTimeLimit: false,         // ← 추가
   timeLimitBars: 20,
   useOppositeSignal: false,
   useTrailingStop: false,
   trailingPct: 2,
 };
+
+
+// 파일 상단 import 밑에(컴포넌트 밖)
+const tipIconStyle = { cursor: "help", fontSize: 12, opacity: 0.7, border: "1px solid #ccc", borderRadius: 10, padding: "0 6px" };
+const warnBadgeStyle = { marginLeft: 8, fontSize: 12, color: "#a10000", background: "#ffe6e6", border: "1px solid #ffb3b3", borderRadius: 6, padding: "2px 6px" };
+const infoBadgeStyle = { marginTop: 6, fontSize: 12, color: "#333", background: "#f2f2f2", border: "1px solid #ddd", borderRadius: 6, padding: "6px 8px" };
+
 
 function newStep(idSeed = Date.now()) {
   return {
@@ -33,6 +40,8 @@ function newStep(idSeed = Date.now()) {
 
 // 시간/분봉 기간 프리셋 (필요시 조정)
 const HOUR_PERIOD_PRESETS = [
+  { key: "300d", label: "최근 300일", days: 300 }, // ✅ 추가
+  { key: "200d", label: "최근 200일", days: 200 }, // ✅ 추가
   { key: "90d", label: "최근 90일", days: 90 },
   { key: "60d", label: "최근 60일", days: 60 },
   { key: "30d", label: "최근 30일", days: 30 },
@@ -65,6 +74,11 @@ export default function CoinLabStrategyPage() {
 
   // 결과 요약
   const [runSummary, setRunSummary] = useState(null);
+
+  const [chainMode, setChainMode] = useState("parallel");
+
+  const [wfFolds, setWfFolds] = useState(0);
+  const [wfScheme, setWfScheme] = useState("rolling");
 
   // 초기 로드: 전체심볼 + 관심종목 이름
   useEffect(() => {
@@ -160,6 +174,8 @@ export default function CoinLabStrategyPage() {
       watchlistName: scope === "watchlist" ? (selectedWatchlist || null) : null,
       symbols,
       steps: stepsPayload,
+      chainMode,
+      walkForward: { folds: wfFolds, scheme: wfScheme },
     };
   }
 
@@ -180,7 +196,7 @@ export default function CoinLabStrategyPage() {
       const res = await fetch("/api/coinlab/backtest/run_scenario", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildPayload()),  // ← 이 한 줄로 워크포워드/옵션 포함
         signal: ctl.signal,
       });
       if (!res.ok) {
@@ -241,6 +257,46 @@ export default function CoinLabStrategyPage() {
           <div style={{ marginLeft: "auto", fontSize: 12, color: "#334155" }}>
             미리보기: <b>{previewCountText}</b>
           </div>
+          <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+          <label style={{ fontSize:12, color:"#334155" }}>실행 모드</label>
+          <select
+            value={chainMode}
+            onChange={e => setChainMode(e.target.value)}
+            style={{ padding:"6px 8px", borderRadius:8, border:"1px solid #E5E7EB", background:"#fff", fontSize:12 }}
+            title="단계 실행 방식을 선택합니다"
+          >
+            <option value="parallel">독립(병렬)</option>
+            <option value="gated">게이팅-동시(같은 봉)</option>
+            <option value="state">게이팅-상태(전단계 레짐)</option>
+          </select>
+        </div>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <label>워크포워드 폴드</label>
+          <input type="number" min={0} max={12} value={wfFolds}
+                onChange={e => setWfFolds(parseInt(e.target.value || "0", 10))} />
+          <select value={wfScheme} onChange={e => setWfScheme(e.target.value)}>
+            <option value="rolling">rolling</option>
+            <option value="anchored">anchored</option>
+          </select>
+          {/* 워크포워드 상태 안내 */}
+          <span
+            style={tipIconStyle}
+            title={
+              "워크포워드: 데이터를 폴드로 나눠 테스트합니다.\n" +
+              "현재 anchored(누적)는 미구현이며,\n" +
+              "rolling은 등분 분할로 동작합니다(슬라이딩 아님)."
+            }
+          >
+            ⓘ 워크포워드 안내
+          </span>
+
+          {/* anchored 선택 시 명확 배지 */}
+          {wfScheme === "anchored" && (
+            <span style={warnBadgeStyle}>anchored 미구현(표시는 rolling과 동일)</span>
+          )}
+        </div>
+
+
         </div>
 
         {/* 심볼 미리보기 */}
@@ -273,6 +329,12 @@ export default function CoinLabStrategyPage() {
         </button>
         {isRunning && <button onClick={cancelRun} style={btnGhost}>취소</button>}
       </div>
+      {(wfFolds > 0) && (
+        <div style={infoBadgeStyle}>
+          워크플로우 안내: 현재 <b>anchored(누적)</b>과 <b>슬라이딩 rolling</b>은 미구현 상태입니다.
+          서버는 <b>등분 분할(rolling 유사)</b>로만 폴드를 처리합니다.
+        </div>
+      )}
 
       <div id="backtest-results" style={{ marginTop: 18 }}>
         {runSummary && (
@@ -305,16 +367,41 @@ export default function CoinLabStrategyPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {step.runs.map((r, i) => (
+                {step.runs.map((r, i) => {
+                  // 새 구조 대응: base 프로파일을 집계
+                  const profs = Array.isArray(r.profiles) ? r.profiles : [];
+                  const base = profs.find(p => p.name === "base") || profs[0];
+                  let trades=0, winRate=0, pf=0, cnt=0, avgWinPct=0, avgLossPct=0;
+                  if (base && Array.isArray(base.runs) && base.runs.length) {
+                    cnt = base.runs.length;
+                    const wr = [], pfs = [], aw = [], al = [], trd = [];
+                    for (const fr of base.runs) {
+                      const s = fr.stats || {};
+                      trd.push(s.trades ?? 0);
+                      wr.push(s.winRate ?? 0);
+                      pfs.push(s.pf ?? s.profitFactor ?? 0);
+                      aw.push(s.avgWinPct ?? 0);
+                      al.push(s.avgLossPct ?? 0);
+                    }
+                    // 폴드 평균
+                    const avg = arr => arr.length ? (arr.reduce((a,b)=>a+(+b||0),0)/arr.length) : 0;
+                    trades = trd.reduce((a,b)=>a+(+b||0),0); // 폴드 합계
+                    winRate = avg(wr);
+                    pf = avg(pfs);
+                    avgWinPct = avg(aw);
+                    avgLossPct = avg(al);
+                  }
+                  return (
                     <tr key={i} style={{ borderBottom: "1px solid #F1F5F9" }}>
                       <td style={{ padding: "6px 4px" }}>{r.symbol}</td>
-                      <td style={{ padding: "6px 4px" }}>{r.stats?.trades ?? 0}</td>
-                      <td style={{ padding: "6px 4px" }}>{r.stats?.winRate ?? 0}</td>
-                      <td style={{ padding: "6px 4px" }}>{r.stats?.avgWinPct ?? 0}</td>
-                      <td style={{ padding: "6px 4px" }}>{r.stats?.avgLossPct ?? 0}</td>
-                      <td style={{ padding: "6px 4px" }}>{r.stats?.profitFactor ?? "-"}</td>
+                      <td style={{ padding: "6px 4px" }}>{trades}</td>
+                      <td style={{ padding: "6px 4px" }}>{(winRate*100).toFixed(1)}</td>
+                      <td style={{ padding: "6px 4px" }}>{avgWinPct.toFixed(2)}</td>
+                      <td style={{ padding: "6px 4px" }}>{avgLossPct.toFixed(2)}</td>
+                      <td style={{ padding: "6px 4px" }}>{pf ? pf.toFixed(2) : "-"}</td>
                     </tr>
-                  ))}
+                  );
+                })}
                 </tbody>
               </table>
             )}
@@ -402,11 +489,11 @@ function StepCard({ step, index, onRemove, onUpdate, onUpdateExit }) {
 
         <div style={row}>
           <label style={checkLabel}>
-            <input type="checkbox" checked={step.exit?.useTimeLimit ?? true} onChange={e => onUpdateExit?.(step.id, { useTimeLimit: e.target.checked })} /> 시간제한(봉)
+            <input type="checkbox" checked={step.exit?.useTimeLimit} onChange={e => onUpdateExit?.(step.id, { useTimeLimit: e.target.checked })} /> 시간제한(봉)
           </label>
-          <input type="number" min={1} disabled={!(step.exit?.useTimeLimit ?? true)} value={step.exit?.timeLimitBars ?? 20}
+          <input type="number" min={1} disabled={!step.exit?.useTimeLimit} value={step.exit?.timeLimitBars ?? 20}
                  onChange={e => onUpdateExit?.(step.id, { timeLimitBars: parseInt(e.target.value || "0", 10) })}
-                 style={numInput(step.exit?.useTimeLimit ?? true)} />
+                 style={numInput(!!step.exit?.useTimeLimit)} />
           <span style={unit}>봉</span>
         </div>
 

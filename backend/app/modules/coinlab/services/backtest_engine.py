@@ -6,13 +6,13 @@ import pandas as pd
 
 @dataclass
 class ExitConfig:
-    use_opposite: bool = True
-    stop_loss_pct: Optional[float] = 3.0     # % (e.g., 3 -> 3%)
-    take_profit_pct: Optional[float] = 7.0
-    time_limit_bars: Optional[int] = 20
-    trailing_pct: Optional[float] = None     # e.g., 5.0
-    fee_bps: float = 10.0                    # round-trip bps (0.1% = 10bps)
-    slippage_bps: float = 5.0                # per fill bps
+    use_opposite: bool = False
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+    time_limit_bars: Optional[int] = None
+    trailing_pct: Optional[float] = None
+    fee_bps: float = 10.0
+    slippage_bps: float = 5.0
 
 def _pct(a, b):
     if b == 0: return 0.0

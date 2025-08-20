@@ -549,6 +549,7 @@ async def condition_search_run(request: Request):
         fpath = os.path.join(interval_dir, latest_file)
         try:
             df = pd.read_parquet(fpath)
+
             last_row = df.iloc[-1].to_dict()
             last_row["symbol"] = symbol
 
@@ -598,21 +599,73 @@ async def condition_search_run(request: Request):
                 last_row["volume_change_rate"] = _get_volume_change_rate(df)
         except Exception:
             continue
-        if match_combo(last_row, combos):
+        is_cond = bool(body.get("isConditionSearch", False))
+        if match_combo(last_row, combos, df=df, interval=interval, is_condition=is_cond):
             result.append(last_row)
     return {"coins": result}
 
 
-def match_combo(item, combos: list[dict]):
+def match_combo(item, combos: list[dict], df: pd.DataFrame | None = None, interval: str = "1d", is_condition: bool = False):
     """
     combos: [{ key, op, value, ... }]
     item: { symbol, open, high, ... }
     ConditionComboBuilder.js의 포맷에 맞춰 해석
     """
+    # 최근 검사 인덱스: 일봉은 '어제'(-2), 그 외는 '최신 완료봉'(-1)로 간주
+    idx = -2 if (is_condition and interval == "1d") else -1
+    ma_cache: dict[int, pd.Series] = {}
+    def _sma(s: pd.Series, n: int) -> pd.Series:
+        return s.rolling(n, min_periods=n).mean()
+
     for cond in combos:
         k, op, v = cond["key"], cond["op"], cond["value"]
-        if k.startswith("ma_"):  # 이평선계산 등 추가
+        # ── MA Cross (골든/데드)
+        if k == "ma_cross":
+            if df is None or "close" not in df.columns:
+                return False
+            try:
+                ma1 = int(v.get("ma1")); ma2 = int(v.get("ma2"))
+            except Exception:
+                return False
+            if ma1 <= 0 or ma2 <= 0 or len(df) < max(ma1, ma2) + 1:
+                return False
+            if ma1 not in ma_cache: ma_cache[ma1] = _sma(df["close"], ma1)
+            if ma2 not in ma_cache: ma_cache[ma2] = _sma(df["close"], ma2)
+            s1, s2 = ma_cache[ma1], ma_cache[ma2]
+            # 안전 인덱스
+            if len(s1) < abs(idx) or len(s2) < abs(idx): return False
+            i_prev = idx - 1
+            if abs(i_prev) > len(s1) or abs(i_prev) > len(s2): return False
+            today_up   = (s1.iloc[idx]  >  s2.iloc[idx])  and (s1.iloc[i_prev] <= s2.iloc[i_prev])
+            today_down = (s1.iloc[idx]  <  s2.iloc[idx])  and (s1.iloc[i_prev] >= s2.iloc[i_prev])
+            if op == "상향돌파" and not today_up:   return False
+            if op == "하향돌파" and not today_down: return False
             continue
+
+        # ── MA Gap (이격도)
+        if k == "ma_gap":
+            if df is None or "close" not in df.columns:
+                return False
+            try:
+                ma1 = int(v.get("ma1")); ma2 = int(v.get("ma2"))
+                th  = float(v.get("gap"))
+            except Exception:
+                return False
+            if ma1 <= 0 or ma2 <= 0 or len(df) < max(ma1, ma2):
+                return False
+            if ma1 not in ma_cache: ma_cache[ma1] = _sma(df["close"], ma1)
+            if ma2 not in ma_cache: ma_cache[ma2] = _sma(df["close"], ma2)
+            s1, s2 = ma_cache[ma1], ma_cache[ma2]
+            if len(s1) < abs(idx) or len(s2) < abs(idx): return False
+            denom = s2.iloc[idx]
+            if denom is None or pd.isna(denom) or denom == 0: return False
+            gap = (s1.iloc[idx] - denom) / denom * 100.0
+            if op == ">"  and not (gap >  th): return False
+            if op == "<"  and not (gap <  th): return False
+            if op == ">=" and not (gap >= th): return False
+            if op == "<=" and not (gap <= th): return False
+            continue
+
         vi = item.get(k)
         # None, 빈값, NaN 방지
         if vi is None or v is None or str(vi).strip() == "" or str(v).strip() == "":
