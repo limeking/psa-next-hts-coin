@@ -34,14 +34,29 @@ export default function ConditionComboBuilder({ value = [], onChange }) {
   const [logicOps, setLogicOps] = useState(value.length > 0 ? value.map((_, i) => (i === 0 ? "" : "AND")) : []);
 
   useEffect(() => {
-    setCombo(value);
-    setLogicOps(value.length > 0 ? value.map((_, i) => (i === 0 ? "" : "AND")) : []);
+    // value가 combo랑 다를 때만 동기화
+    if (JSON.stringify(value) !== JSON.stringify(combo)) {
+      setCombo(value);
+      setLogicOps(
+        value.length > 0
+          ? value.map((c, i) => (i === 0 ? "" : ((c && c.logic) ? String(c.logic).toUpperCase() : "AND")))
+          : []
+      );
+    }
   }, [value]);
+  
 
   useEffect(() => {
-    if (onChange) onChange(combo);
+    if (onChange) {
+      const out = combo.map((c, i) => ({
+        ...c,
+        logic: (logicOps[i] ? String(logicOps[i]).toUpperCase() : (i === 0 ? "AND" : "AND"))
+      }));
+      
+      onChange(out);
+    }
     // eslint-disable-next-line
-  }, [combo]);
+  }, [combo, logicOps]);
 
   // 조건 추가 핸들러
   const handleAddCondition = () => {
