@@ -20,6 +20,7 @@ from ..services.utils import save_options, load_options
 from .coin_data import get_coin_data_list, download_coin_data, update_coin_data
 from ..services.coin_data_service import delete_coin_data, bulk_delete, bulk_update, bulk_download
 from ..services.backtest_service import run_scenario_service
+from ..services.strategy_manager import resolve_signals_for_combo
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +457,8 @@ async def condition_search_run(request: Request):
     realtime = bool(body.get("realtime", False))
     symbols_filter = body.get("symbols", None) 
     # --- add: orderbook depth 옵션 (기본 5) ---
+
+
     try:
         _d = int(body.get("orderbook_depth", 5))
     except Exception:
@@ -600,6 +603,8 @@ async def condition_search_run(request: Request):
         except Exception:
             continue
         is_cond = bool(body.get("isConditionSearch", False))
+
+        # 기존 조합식 필터
         if match_combo(last_row, combos, df=df, interval=interval, is_condition=is_cond):
             result.append(last_row)
     return {"coins": result}
@@ -607,84 +612,127 @@ async def condition_search_run(request: Request):
 
 def match_combo(item, combos: list[dict], df: pd.DataFrame | None = None, interval: str = "1d", is_condition: bool = False):
     """
-    combos: [{ key, op, value, ... }]
-    item: { symbol, open, high, ... }
-    ConditionComboBuilder.js의 포맷에 맞춰 해석
+    combos: [{ key, op, value, logic?: 'AND'|'OR' }]
+    item: { symbol, open, high, low, close, ... }
+    - 각 조건의 판정(ok)을 logic(AND/OR)로 누적하여 최종 pass_flag 결정
+    - logic 미지정/빈문자("") 시 AND로 처리(하위호환)
     """
-    # 최근 검사 인덱스: 일봉은 '어제'(-2), 그 외는 '최신 완료봉'(-1)로 간주
+    # 조건검색(일봉)일 때는 전일(-2), 그 외 최신 완료봉(-1)
     idx = -2 if (is_condition and interval == "1d") else -1
+
+    # 이동평균 캐시
     ma_cache: dict[int, pd.Series] = {}
     def _sma(s: pd.Series, n: int) -> pd.Series:
         return s.rolling(n, min_periods=n).mean()
 
+    pass_flag = None  # None → 첫 조건
+
     for cond in combos:
-        k, op, v = cond["key"], cond["op"], cond["value"]
+        k = cond.get("key")
+        op = cond.get("op")
+        v  = cond.get("value")
+        logic = (cond.get("logic") or "AND").upper()  # "" 또는 None 이면 AND
+
+        ok = False  # 현재 조건 판정 결과
+
         # ── MA Cross (골든/데드)
         if k == "ma_cross":
-            if df is None or "close" not in df.columns:
-                return False
-            try:
-                ma1 = int(v.get("ma1")); ma2 = int(v.get("ma2"))
-            except Exception:
-                return False
-            if ma1 <= 0 or ma2 <= 0 or len(df) < max(ma1, ma2) + 1:
-                return False
-            if ma1 not in ma_cache: ma_cache[ma1] = _sma(df["close"], ma1)
-            if ma2 not in ma_cache: ma_cache[ma2] = _sma(df["close"], ma2)
-            s1, s2 = ma_cache[ma1], ma_cache[ma2]
-            # 안전 인덱스
-            if len(s1) < abs(idx) or len(s2) < abs(idx): return False
-            i_prev = idx - 1
-            if abs(i_prev) > len(s1) or abs(i_prev) > len(s2): return False
-            today_up   = (s1.iloc[idx]  >  s2.iloc[idx])  and (s1.iloc[i_prev] <= s2.iloc[i_prev])
-            today_down = (s1.iloc[idx]  <  s2.iloc[idx])  and (s1.iloc[i_prev] >= s2.iloc[i_prev])
-            if op == "상향돌파" and not today_up:   return False
-            if op == "하향돌파" and not today_down: return False
-            continue
+            if df is not None and "close" in df.columns:
+                try:
+                    ma1 = int(v.get("ma1")); ma2 = int(v.get("ma2"))
+                    if ma1 > 0 and ma2 > 0 and len(df) >= max(ma1, ma2) + 1:
+                        if ma1 not in ma_cache: ma_cache[ma1] = _sma(df["close"], ma1)
+                        if ma2 not in ma_cache: ma_cache[ma2] = _sma(df["close"], ma2)
+                        s1, s2 = ma_cache[ma1], ma_cache[ma2]
+                        if len(s1) >= abs(idx) and len(s2) >= abs(idx):
+                            i_prev = idx - 1
+                            if abs(i_prev) <= len(s1) and abs(i_prev) <= len(s2):
+                                today_up   = (s1.iloc[idx]  >  s2.iloc[idx])  and (s1.iloc[i_prev] <= s2.iloc[i_prev])
+                                today_down = (s1.iloc[idx]  <  s2.iloc[idx])  and (s1.iloc[i_prev] >= s2.iloc[i_prev])
+                                ok = (op == "상향돌파" and today_up) or (op == "하향돌파" and today_down)
+                except Exception:
+                    ok = False
 
         # ── MA Gap (이격도)
-        if k == "ma_gap":
-            if df is None or "close" not in df.columns:
-                return False
-            try:
-                ma1 = int(v.get("ma1")); ma2 = int(v.get("ma2"))
-                th  = float(v.get("gap"))
-            except Exception:
-                return False
-            if ma1 <= 0 or ma2 <= 0 or len(df) < max(ma1, ma2):
-                return False
-            if ma1 not in ma_cache: ma_cache[ma1] = _sma(df["close"], ma1)
-            if ma2 not in ma_cache: ma_cache[ma2] = _sma(df["close"], ma2)
-            s1, s2 = ma_cache[ma1], ma_cache[ma2]
-            if len(s1) < abs(idx) or len(s2) < abs(idx): return False
-            denom = s2.iloc[idx]
-            if denom is None or pd.isna(denom) or denom == 0: return False
-            gap = (s1.iloc[idx] - denom) / denom * 100.0
-            if op == ">"  and not (gap >  th): return False
-            if op == "<"  and not (gap <  th): return False
-            if op == ">=" and not (gap >= th): return False
-            if op == "<=" and not (gap <= th): return False
-            continue
+        elif k == "ma_gap":
+            if df is not None and "close" in df.columns:
+                try:
+                    ma1 = int(v.get("ma1")); ma2 = int(v.get("ma2"))
+                    th  = float(v.get("gap"))
+                    if ma1 > 0 and ma2 > 0 and len(df) >= max(ma1, ma2):
+                        if ma1 not in ma_cache: ma_cache[ma1] = _sma(df["close"], ma1)
+                        if ma2 not in ma_cache: ma_cache[ma2] = _sma(df["close"], ma2)
+                        s1, s2 = ma_cache[ma1], ma_cache[ma2]
+                        if len(s1) >= abs(idx) and len(s2) >= abs(idx):
+                            denom = s2.iloc[idx]
+                            if denom is not None and not pd.isna(denom) and denom != 0:
+                                gap = (s1.iloc[idx] - denom) / denom * 100.0
+                                if   op == ">"  : ok = (gap >  th)
+                                elif op == "<"  : ok = (gap <  th)
+                                elif op == ">=" : ok = (gap >= th)
+                                elif op == "<=" : ok = (gap <= th)
+                except Exception:
+                    ok = False
 
-        vi = item.get(k)
-        # None, 빈값, NaN 방지
-        if vi is None or v is None or str(vi).strip() == "" or str(v).strip() == "":
-            return False
-        # 수치형 연산은 float 변환 예외 처리
-        if op in {">", "<", ">=", "<="}:
-            try:
-                vi_f = float(vi)
-                v_f = float(v)
-            except Exception:
-                return False
-            if op == ">" and not (vi_f > v_f): return False
-            if op == "<" and not (vi_f < v_f): return False
-            if op == ">=" and not (vi_f >= v_f): return False
-            if op == "<=" and not (vi_f <= v_f): return False
-        elif op == "=":
-            if str(vi) != str(v): return False
-        # 필요시 기타 연산 추가
-    return True
+        else:
+            # 숫자/문자 비교 (item 기반; realtime 등에서 사용)
+            vi = item.get(k)
+            if vi is not None and v is not None and str(vi).strip() != "" and str(v).strip() != "":
+                if op in {">", "<", ">=", "<="}:
+                    try:
+                        vi_f = float(vi); v_f = float(v)
+                        if   op == ">" : ok = (vi_f >  v_f)
+                        elif op == "<" : ok = (vi_f <  v_f)
+                        elif op == ">=": ok = (vi_f >= v_f)
+                        elif op == "<=": ok = (vi_f <= v_f)
+                    except Exception:
+                        ok = False
+                elif op == "=":
+                    ok = (str(vi) == str(v))
+                else:
+                    ok = False
+            else:
+                ok = False
+
+        # ── 누적 논리 결합
+        if pass_flag is None:
+            pass_flag = bool(ok)
+        else:
+            if logic == "OR":
+                pass_flag = pass_flag or bool(ok)
+            else:  # AND 기본
+                pass_flag = pass_flag and bool(ok)
+
+    return bool(pass_flag) if pass_flag is not None else True
+
+
+
+def match_patterns(df: pd.DataFrame, pattern_ids: list[str], interval: str = "1d", is_condition: bool = False) -> bool:
+    """
+    선택된 패턴들 중 '당일(또는 전일)' 캔들에서 진입 시그널(=1)이 하나라도 있으면 통과.
+    - 조건검색(일봉)일 때는 전일 봉(-2)에서만 판정, 그 외는 최신 완료봉(-1)
+    """
+    if not pattern_ids or df is None or df.empty:
+        return True
+
+    idx = -2 if (is_condition and interval == "1d") else -1
+
+    for pid in pattern_ids:
+        try:
+            entry, _ = resolve_signals_for_combo(df, pid)
+            if entry is None or len(entry) == 0:
+                continue
+            # 안전 인덱싱
+            if len(entry) < abs(idx):
+                continue
+            if int(entry.iloc[idx]) == 1:
+                return True
+        except Exception:
+            # 패턴 계산 실패 시 해당 패턴은 스킵하고 다음 패턴 검사
+            continue
+    # 지정된 모든 패턴에서 진입 신호가 없으면 불통
+    return False
+
 
 
 def _to_float(x):

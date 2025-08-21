@@ -10,6 +10,7 @@ import WatchlistPanel from "../components/WatchlistPanel";
 import useWatchlist from "../hooks/useWatchlist";
 
 
+
 const dummyCoinList = [
   { symbol: "BTC_KRW", return: 3.2, volume: 7000000000, rsi: 55, ma5: 45000, ma20: 43000, ma60: 40000, ma120: 38000, theme: "플랫폼", close: 45000 },
   { symbol: "HIPPO_KRW", return: 7.5, volume: 180000000, rsi: 27, ma5: 105, ma20: 98, ma60: 91, ma120: 80, theme: "AI", close: 105 },
@@ -27,35 +28,45 @@ function sanitizeWatchlistName(name) {
 
 function filterByComboObj(comboObj, data) {
   const combo = comboObj?.combo || [];
-  return data.filter(item =>
-    combo.every(cond => {
+  return data.filter(item => {
+    let pass = null;
+    for (let i = 0; i < combo.length; i++) {
+      const cond = combo[i];
+      const logic = (cond.logic || (i === 0 ? "AND" : "AND")).toUpperCase();
+      let ok = false;
+
       if (cond.key === "ma_cross") {
         const ma1 = item["ma" + cond.value.ma1];
         const ma2 = item["ma" + cond.value.ma2];
-        if (!ma1 || !ma2) return false;
-        return cond.op === "상향돌파" ? (ma1 > ma2) : (ma1 < ma2);
-      }
-      if (cond.key === "ma_gap") {
+        if (ma1 != null && ma2 != null) {
+          ok = cond.op === "상향돌파" ? (ma1 > ma2) : (ma1 < ma2);
+        }
+      } else if (cond.key === "ma_gap") {
         const ma1 = item["ma" + cond.value.ma1];
         const ma2 = item["ma" + cond.value.ma2];
-        if (!ma1 || !ma2) return false;
-        const gap = ((ma1 - ma2) / ma2) * 100;
-        if (cond.op === ">") return gap > Number(cond.value.gap);
-        if (cond.op === "<") return gap < Number(cond.value.gap);
-        if (cond.op === ">=") return gap >= Number(cond.value.gap);
-        if (cond.op === "<=") return gap <= Number(cond.value.gap);
-        return false;
+        if (ma1 != null && ma2 != null && Number(ma2) !== 0) {
+          const gap = ((ma1 - ma2) / ma2) * 100;
+          if (cond.op === ">") ok = gap >  Number(cond.value.gap);
+          else if (cond.op === "<") ok = gap <  Number(cond.value.gap);
+          else if (cond.op === ">=") ok = gap >= Number(cond.value.gap);
+          else if (cond.op === "<=") ok = gap <= Number(cond.value.gap);
+        }
+      } else {
+        const v = item[cond.key];
+        if (cond.op === ">") ok = Number(v) >  Number(cond.value);
+        else if (cond.op === ">=") ok = Number(v) >= Number(cond.value);
+        else if (cond.op === "<") ok = Number(v) <  Number(cond.value);
+        else if (cond.op === "<=") ok = Number(v) <= Number(cond.value);
+        else if (cond.op === "=") ok = String(v) === String(cond.value);
       }
-      const v = item[cond.key];
-      if (cond.op === ">")  return Number(v) >  Number(cond.value);
-      if (cond.op === ">=") return Number(v) >= Number(cond.value);
-      if (cond.op === "<")  return Number(v) <  Number(cond.value);
-      if (cond.op === "<=") return Number(v) <= Number(cond.value);
-      if (cond.op === "=") return String(v) === String(cond.value);
-      return false;
-    })
-  );
+
+      if (pass === null) pass = !!ok; // 첫 조건
+      else pass = (logic === "OR") ? (pass || !!ok) : (pass && !!ok);
+    }
+    return !!pass;
+  });
 }
+
 
 export default function ConditionSearchPage() {
   const [builderList, setBuilderList] = useState([]);
@@ -94,6 +105,8 @@ export default function ConditionSearchPage() {
   // 검색 결과(코인 리스트) 테이블의 정렬 상태를 관리
   // 기본 정렬: 등락률(return)이 높은 순(내림차순)
   const [sortConfig, setSortConfig] = useState({ key: "return", direction: "desc" });
+
+
 
   const navigate = useNavigate();
 
@@ -321,27 +334,62 @@ export default function ConditionSearchPage() {
     setIsSearching(true);
     try {
       // 현재 조합 영역(= builderList)을 1단계 조건으로 사용
-      const combos = builderList.flatMap(x => x?.comboObj?.combo || []);
-      const payload = { combos, interval, realtime: false, isConditionSearch: true };
+      // ▼ 블록 op(AND/OR)를 각 블록의 첫 조건 logic으로 주입해서 평탄화
+      const combos = [];
+      builderList.forEach((block, idx) => {
+        const arr = Array.isArray(block?.comboObj?.combo) ? block.comboObj.combo : [];
+        if (arr.length === 0) return;
+        const blockOp = (idx === 0 ? "AND" : (block.op || "AND")).toUpperCase();
+        const cloned = arr.map((c, i) => ({
+          ...c,
+          // 블록의 첫 번째 조건은 블록 op를 logic으로 사용
+          // (나머지 조건은 빌더에서 온 logic 그대로 유지)
+          logic: i === 0 ? blockOp : (c.logic ? String(c.logic).toUpperCase() : "AND"),
+        }));
+        combos.push(...cloned);
+      });
+      const payload = {
+        combos,
+        interval,
+        realtime: false,
+        isConditionSearch: true,
+
+      };
       const res = await runConditionSearch(payload);
       const rows = Array.isArray(res?.coins) ? res.coins : [];
       setResult(rows);
       setStage1Symbols(rows.map(r => r.symbol));
     } catch (e) {
       console.error(e);
+      alert("1단계 조건검색 실패");
       // 실패 시 더미/필요 처리
     } finally {
       setIsSearching(false);
     }
   };
 
-  const stage2Payload = () => ({
-    combos: stage2Combos.flatMap(x => x?.comboObj?.combo || []),
-    realtime: true,
-    interval,
-    symbols: getStage2Symbols(),            // ⬅️ 1단계에서 만든 관심종목만 대상으로
-    orderbook_depth: Number(orderbookDepth) || 5,
-  });
+  const stage2Payload = () => {
+    const combos = [];
+    stage2Combos.forEach((block, idx) => {
+      const arr = Array.isArray(block?.comboObj?.combo) ? block.comboObj.combo : [];
+      if (!arr.length) return;
+      const blockOp = (idx === 0 ? "AND" : (block.op || "AND")).toUpperCase();
+      const cloned = arr.map((c, i) => ({
+        ...c,
+        logic: i === 0 ? blockOp : (c.logic ? String(c.logic).toUpperCase() : "AND"),
+      }));
+      combos.push(...cloned);
+    });
+  
+    return {
+      combos,
+      realtime: true,
+      interval,
+      symbols: getStage2Symbols(),
+      orderbook_depth: Number(orderbookDepth) || 5,
+    };
+  };
+  
   
   const handleStage2ScanOnce = async () => {
     if (stage2RunningRef.current) return;
@@ -782,7 +830,12 @@ export default function ConditionSearchPage() {
               )}
             </div>
           </div>
-            
+          
+          <div className="border rounded p-3 mt-3">
+              
+            <div className="text-xs text-gray-400 mt-1">※ 조건검색은 최근 봉만 판정, 백테스트는 전체 기간 적용</div>
+          </div>
+
 
           <div style={{ marginTop: 14 }}>
             <h4 style={{ marginBottom: 10 }}>검색 결과 ({Array.isArray(result) ? result.length : 0} 종목)</h4>
