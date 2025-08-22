@@ -38,3 +38,16 @@ export const BACKTEST_PERIOD_PRESETS = [
   { key: "2m",  label: "최근 2개월", months: 2 },
   { key: "1m",  label: "최근 1개월", months: 1 },
 ];
+
+
+// ─────────────────────────────────────────
+// 전략/패턴 선택 옵션 (백테스트 전용)
+// ─────────────────────────────────────────
+export const STRATEGY_OPTIONS = [
+  { value: "MA20_breakout",           label: "MA20 상향돌파" },
+  { value: "MA5_20_cross",            label: "MA5↔20 골든/데드" },
+  { value: "RSI_30_70",               label: "RSI 30↗/70↘" },
+  { value: "pattern_pullback_breakout", label: "패턴: 풀백 후 돌파" },
+  { value: "pattern_cup_handle",        label: "패턴: 컵앤핸들" },
+  { value: "pattern_lh_reversal",       label: "패턴: LH 반전" },
+];

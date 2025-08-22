@@ -1,6 +1,6 @@
 # backend/app/modules/coinlab/routers/coinlab.py
 
-from fastapi import APIRouter, Body, Request, Query, BackgroundTasks, HTTPException
+from fastapi import APIRouter, Body, Request, Query, BackgroundTasks, HTTPException, FastAPI
 from fastapi.responses import Response, JSONResponse
 import time,logging
 import json
@@ -21,6 +21,8 @@ from .coin_data import get_coin_data_list, download_coin_data, update_coin_data
 from ..services.coin_data_service import delete_coin_data, bulk_delete, bulk_update, bulk_download
 from ..services.backtest_service import run_scenario_service
 from ..services.strategy_manager import resolve_signals_for_combo
+from ..services.strategy_manager import list_strategies
+
 
 logger = logging.getLogger(__name__)
 
@@ -958,3 +960,7 @@ def run_scenario(payload: Dict[str, Any] = Body(...)):
     finally:
         RUNNING_FLAG = False
         logger.info("run_scenario end took=%.2fs", time.time() - t0)
+
+@router.get("/backtest/strategies")
+def get_strategies():
+    return list_strategies()

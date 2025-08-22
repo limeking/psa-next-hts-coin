@@ -1,6 +1,7 @@
 # backend/services/backtest_service.py
 from typing import Dict, Any, List, Tuple
 from pathlib import Path
+import numpy as np
 import json, os, time
 import pandas as pd
 from datetime import datetime, timedelta
@@ -9,6 +10,9 @@ from .strategy_manager import resolve_signals_for_combo
 
 DATA_DIR = Path("/data")
 WATCHLISTS_DIR = DATA_DIR / "watchlists"
+
+MODULE_DATA_DIR = Path(__file__).parent.parent / "data"
+COND_FILE = MODULE_DATA_DIR / "condition_searches.json"
 
 # ── 상태 게이팅: 1단계 entry로 '열고', opp_exit 또는 time_limit로 '닫는' 레짐 마스크 생성
 def _build_state_mask(entry_sr, opp_exit_sr=None, time_limit_bars=None):
@@ -153,18 +157,112 @@ def _resolve_symbols(scope: str, watchlist_name: str | None, client_symbols: Lis
         return []
 
 
-# === Walk-Forward, Metrics, EoT helpers (add near other helpers) ===
-def _split_folds_by_time(first_ts: int, last_ts: int, folds: int, scheme: str = "rolling"):
-    """[(train_start, train_end, test_start, test_end), ...] 반환. 지금은 간단히 test 구간만 사용."""
+# === Walk-Forward, Metrics, EoT helpers (replace this function) ===
+def _split_folds_by_time(first_ts: int, last_ts: int, folds: int, scheme: str = "rolling",
+                         train_ratio: float = 0.7, min_train_secs: int = 30*24*3600):
+    """
+    [(train_start, train_end, test_start, test_end), ...] 반환.
+    scheme="anchored": 누적 훈련 + 직후 구간 검증
+    scheme="rolling" : 각 폴드 구간을 train_ratio로 분할하여 train/test
+    """
     if folds < 2: folds = 2
-    span = last_ts - first_ts
-    step = span // folds
-    out = []
-    for k in range(folds):
-        test_start = first_ts + step * k
-        test_end   = first_ts + step * (k+1) if k < folds-1 else last_ts
-        out.append((None, None, test_start, test_end))
-    return out
+    span = max(1, last_ts - first_ts)
+    # 등간 분할 경계
+    cuts = [int(first_ts + span * k / folds) for k in range(folds)] + [last_ts]
+    plan = []
+
+    if str(scheme).lower() == "anchored":
+        # 누적 훈련(첫 시점 고정), 바로 다음 구간 검증
+        for k in range(1, len(cuts)):
+            train_start = first_ts
+            train_end   = cuts[k-1]
+            test_start  = cuts[k-1]
+            test_end    = cuts[k]
+            if test_end > test_start and train_end > train_start:
+                plan.append((train_start, train_end, test_start, test_end))
+    else:
+        # rolling: 각 등분 구간 내부를 train/test로 나눔(고정 비율)
+        for k in range(len(cuts)-1):
+            seg_s, seg_e = cuts[k], cuts[k+1]
+            seg_span = max(1, seg_e - seg_s)
+            tr_end   = seg_s + int(seg_span * float(train_ratio))
+            if (tr_end - seg_s) < min_train_secs:
+                tr_end = min(seg_e - 1, seg_s + min_train_secs)
+            if tr_end <= seg_s or seg_e <= tr_end:  # 보호
+                continue
+            plan.append((seg_s, tr_end, tr_end, seg_e))
+    return plan
+
+
+def _score_metric(stats: dict, key: str = "pf") -> float:
+    """튜닝 점수화: 기본은 PF, 부족하면 승률→기대값 순으로 폴백."""
+    if not stats: return 0.0
+    for k in (key, "profitFactor", "pf"):
+        v = stats.get(k)
+        if isinstance(v, (int, float)): return float(v)
+    # 보조 지표
+    wr = stats.get("winRate", 0.0)
+    exp = stats.get("expectancy", 0.0)
+    try:
+        return max(0.0, float(wr)) * 0.7 + max(0.0, float(exp)) * 0.3
+    except:
+        return 0.0
+
+
+def _train_select_params(df_train: pd.DataFrame,
+                         strategy_code: str,
+                         param_grid: list[dict],
+                         exit_cfg_template,
+                         include_eot: bool,
+                         resolve_signals_func):
+    """
+    train 구간에서 param_grid를 순회해 최고의 파라미터 하나를 고른다.
+    반환: (best_params or None, train_best_stats)
+    """
+    if not strategy_code or not param_grid:
+        return None, {}
+
+    best_params, best_score, best_stats = None, -1e18, {}
+
+    t_idx = df_train["time"].astype("int64")
+
+    for cand in param_grid:
+        # cand 파라미터로 신호 재생성
+        entry_c, opp_c = resolve_signals_func(df_train, strategy_code, cand)
+
+        entry_c = (pd.Series(entry_c, index=df_train.index).fillna(0).astype(int)
+                   if entry_c is not None else pd.Series(0, index=df_train.index))
+        opp_c   = (pd.Series(opp_c,   index=df_train.index).fillna(0).astype(int)
+                   if opp_c   is not None else None)
+
+        # 엔진 호출
+        r = backtest_single(
+            df_train,
+            entry_c,
+            opp_c,
+            ExitConfig(
+                use_opposite = exit_cfg_template.use_opposite,
+                stop_loss_pct = exit_cfg_template.stop_loss_pct,
+                take_profit_pct = exit_cfg_template.take_profit_pct,
+                time_limit_bars = exit_cfg_template.time_limit_bars,
+                trailing_pct = exit_cfg_template.trailing_pct,
+                fee_bps = exit_cfg_template.fee_bps,
+                slippage_bps = exit_cfg_template.slippage_bps,
+            ),
+            fill_next_bar=True
+        )
+        all_tr = _tag_eot(r.get("trades") or [], int(df_train["time"].iloc[-1]))
+        tr_for = [t for t in all_tr if include_eot or (t.get("reason") != "EOT")]
+        stats  = _calc_metrics_from_trades(tr_for, int(df_train["time"].iloc[0]), int(df_train["time"].iloc[-1]))
+        score  = _score_metric(stats, "pf")
+
+        if score > best_score:
+            best_score, best_params, best_stats = score, cand, stats
+
+    return best_params, best_stats
+
+
+
 
 def _calc_metrics_from_trades(trades: list, first_ts: int, last_ts: int) -> dict:
     import math
@@ -272,6 +370,103 @@ def _tag_eot(trades: list, last_ts: int):
     return trades
 
 
+def _sma(s: pd.Series, n: int) -> pd.Series:
+    return s.rolling(n, min_periods=n).mean()
+
+def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
+    delta = close.diff()
+    up = delta.clip(lower=0).ewm(alpha=1/n, adjust=False).mean()
+    down = (-delta).clip(lower=0).ewm(alpha=1/n, adjust=False).mean()
+    rs = up / down.replace(0, 1e-12)
+    return 100 - (100 / (1 + rs))
+
+def _load_saved_combo_item(name: str):
+    try:
+        arr = json.loads(COND_FILE.read_text("utf-8"))
+        for it in arr:
+            if str(it.get("name")) == str(name):
+                return it
+    except Exception:
+        return None
+    return None
+
+def _series_for_cond(df: pd.DataFrame, cond: dict) -> pd.Series:
+    key = cond.get("key")
+    op  = cond.get("op")
+    v   = cond.get("value")
+    close = df["close"]
+
+    # 숫자 비교 헬퍼
+    def _cmp(lhs: pd.Series, rhs_val: float):
+        if op == ">":  return lhs >  rhs_val
+        if op == "<":  return lhs <  rhs_val
+        if op == ">=": return lhs >= rhs_val
+        if op == "<=": return lhs <= rhs_val
+        if op == "==" or op == "=":  return lhs == float(rhs_val)
+        return pd.Series(False, index=lhs.index)
+
+    if key == "rsi":
+        th = float(v)
+        r = _rsi(close, 14)
+        return _cmp(r, th).fillna(False)
+
+    if key == "return":
+        th = float(v)
+        ret = close.pct_change() * 100.0
+        return _cmp(ret, th).fillna(False)
+
+    if key == "volume":
+        th = float(v)
+        vol = pd.to_numeric(df.get("volume"), errors="coerce")
+        return _cmp(vol, th).fillna(False)
+
+    if key == "volume_change_rate":
+        th = float(v)
+        vol = pd.to_numeric(df.get("volume"), errors="coerce")
+        chg = (vol / vol.shift(1) - 1.0) * 100.0
+        return _cmp(chg, th).fillna(False)
+
+    if key == "ma_cross":
+        ma1 = int(v.get("ma1")); ma2 = int(v.get("ma2"))
+        s1 = _sma(close, ma1); s2 = _sma(close, ma2)
+        up   = (s1 > s2) & (s1.shift(1) <= s2.shift(1))
+        down = (s1 < s2) & (s1.shift(1) >= s2.shift(1))
+        return (up if op == "상향돌파" else down).fillna(False)
+
+    if key == "ma_gap":
+        ma1 = int(v.get("ma1")); ma2 = int(v.get("ma2")); th = float(v.get("gap"))
+        s1 = _sma(close, ma1); s2 = _sma(close, ma2)
+        gap = (s1 - s2) / s2.replace(0, np.nan) * 100.0
+        return _cmp(gap, th).fillna(False)
+
+    if key == "theme":
+        # 테마는 과거 캔들별 시계열이 없어 백테스트에선 패스(필요하면 매핑 테이블로 확장)
+        return pd.Series(True, index=df.index)
+
+    # 호가/잔량 등 실시간 전용 키는 백테스트에선 False
+    return pd.Series(False, index=df.index)
+
+def _series_for_combo_obj(df: pd.DataFrame, combo_obj: dict) -> pd.Series:
+    s = pd.Series(True, index=df.index)
+    for cond in (combo_obj.get("combo") or []):
+        s = s & _series_for_cond(df, cond)
+    return s.fillna(False)
+
+def _entry_series_from_saved_combo(df: pd.DataFrame, combo_name: str):
+    item = _load_saved_combo_item(combo_name)
+    if not item:
+        return None
+    combined = None
+    for i, part in enumerate(item.get("combo", [])):
+        s = _series_for_combo_obj(df, part.get("comboObj") or {})
+        if combined is None:
+            combined = s
+        else:
+            op = str(part.get("op") or "AND").upper()
+            combined = (combined | s) if op == "OR" else (combined & s)
+    return None if combined is None else combined.fillna(False).astype(int)
+
+
 def run_scenario_service(payload: Dict[str, Any]) -> Dict[str, Any]:
     # 새 옵션 (기본값)
     wf = payload.get("walkForward") or {}      # 예: {"folds": 4, "scheme": "rolling"}
@@ -312,10 +507,17 @@ def run_scenario_service(payload: Dict[str, Any]) -> Dict[str, Any]:
     results = []
     total_trades = 0
 
+    total_steps = len(steps)
+
     for step_index, step in enumerate(steps):
         tf = step.get("tf","1d")
-        combo = step.get("comboName") or "MA20_breakout"
+        combo = step.get("comboName") or None
+        strategy_code = step.get("strategyCode") or None  # [NEW]
+        strategy_params = step.get("strategyParams") or {}
+
         period_key = step.get("periodKey") or "12m"
+        start_ts = _period_key_to_start_ts(period_key)
+
         exit_cfg_raw = (step.get("exit") or {})
         exit_cfg = ExitConfig(
             use_opposite = bool(exit_cfg_raw.get("useOppositeSignal", False)),
@@ -327,7 +529,7 @@ def run_scenario_service(payload: Dict[str, Any]) -> Dict[str, Any]:
             slippage_bps = 5.0
         )
 
-        start_ts = _period_key_to_start_ts(period_key)
+        print("STEP", step_index, "tf", tf, "period", period_key, "combo", combo, "strategy", strategy_code, "symbols", len(symbols))
 
         step_runs = []
         for sym in symbols:
@@ -335,12 +537,55 @@ def run_scenario_service(payload: Dict[str, Any]) -> Dict[str, Any]:
             if len(df) < 50:
                 continue
 
-             # 엔트리/반대신호 생성 (콤보별)
-            entry, opp_exit = resolve_signals_for_combo(df, combo)
+            # ✅ 엔트리/반대신호 생성 (전략/콤보를 각각 계산)
+            entry, opp_exit = None, None
+            require_both = bool(step.get("requireBoth"))
+
+            # 개별 신호 계산
+            strategy_entry, strategy_opp = None, None
+            combo_entry, combo_opp = None, None
+
+            if strategy_code:
+                strategy_entry, strategy_opp = resolve_signals_for_combo(df, strategy_code, strategy_params)
+
+            if combo:
+                combo_entry = _entry_series_from_saved_combo(df, combo)
+                if exit_cfg.use_opposite and combo_entry is not None:
+                    # 콤보 해제 순간(1→0)을 반대신호로 사용 (옵션 켜진 경우)
+                    combo_opp = ((combo_entry.shift(1) == 1) & (combo_entry == 0)).astype(int)
+
+            # 혼합 로직
+            if require_both:
+                # 둘 다 있어야 진입. 하나라도 없으면 0
+                if (strategy_entry is not None) and (combo_entry is not None):
+                    entry = ((strategy_entry.astype(bool)) & (combo_entry.astype(bool))).astype(int)
+                    # 반대신호는 전략 쪽이 있으면 우선 사용, 없으면 콤보 opp 사용
+                    opp_exit = strategy_opp if strategy_opp is not None else combo_opp
+                else:
+                    entry = pd.Series(0, index=df.index)
+                    opp_exit = None
+            else:
+                # 기존 우선순위 유지: 전략 있으면 전략, 없으면 콤보
+                if strategy_entry is not None:
+                    entry, opp_exit = strategy_entry, strategy_opp
+                elif combo_entry is not None:
+                    entry, opp_exit = combo_entry, combo_opp
+                else:
+                    entry, opp_exit = pd.Series(0, index=df.index), None
+
+            # 3) 둘 다 없거나 인식 불가 → 엔트리 없음(0)
+            if entry is None:
+                entry = pd.Series(0, index=df.index)
             entry = entry.reindex(df.index).fillna(0).astype(int)
             
             if opp_exit is not None:
                 opp_exit = opp_exit.reindex(df.index).fillna(0).astype(int)
+            # ✅ 폴드 구간 정렬을 위해 'time' 기준 시그널 시리즈를 준비
+            t_idx = df["time"].astype("int64")
+            entry_by_time = pd.Series(entry.to_numpy(), index=t_idx)
+            opp_by_time = None
+            if opp_exit is not None:
+                opp_by_time = pd.Series(opp_exit.to_numpy(), index=t_idx)
 
             # gated 모드 초기 시드: 0단계 엔트리를 기준으로 누적 AND 시작
             if chain_mode == "gated" and step_index == 0:
@@ -386,11 +631,13 @@ def run_scenario_service(payload: Dict[str, Any]) -> Dict[str, Any]:
                 prev_mask = gating_prev_masks.get(sym)
                 if prev_mask is not None:
                     entry = ((entry > 0) & (prev_mask.astype(bool))).astype(int)
-                # 누적 갱신(이번 단계 엔트리도 다음 단계 기준이 됨)
-                cur_entry_mask = (entry > 0)
-                gating_prev_masks[sym] = (gating_prev_masks[sym] & cur_entry_mask) if sym in gating_prev_masks else cur_entry_mask
+                    # 누적 갱신(이번 단계 엔트리도 다음 단계 기준이 됨)
+                    cur_entry_mask = (entry > 0)
+                    gating_prev_masks[sym] = (gating_prev_masks[sym] & cur_entry_mask) if sym in gating_prev_masks else cur_entry_mask
             # 실제 백테스트 실행 (엔진 그대로)
             # === 비용 시나리오 × 워크포워드 ===
+           # ... 앞부분 동일 (심볼 루프 시작, df 로드, entry/opp 계산 등) ...
+
             # 폴드 경계 계산
             first_ts = int(df["time"].iloc[0]); last_ts = int(df["time"].iloc[-1])
             folds_plan = _split_folds_by_time(first_ts, last_ts, folds, scheme) if folds > 0 else [(None,None,first_ts,last_ts)]
@@ -402,6 +649,103 @@ def run_scenario_service(payload: Dict[str, Any]) -> Dict[str, Any]:
                 slp_bps = float(prof.get("slippage_bps") or 5.0)
                 prof_steps = []
                 prof_total_trades = 0
+
+                for (train_start, train_end, test_start, test_end) in folds_plan:
+                    dff_test  = df[(df["time"] >= test_start) & (df["time"] <= test_end)].reset_index(drop=True)
+
+                    # --- [핵심] 폴드별 튜닝 단계 (strategyParamsGrid가 있을 때만) ---
+                    best_params = None
+                    train_stats = {}
+                    if strategy_code:
+                        param_grid = step.get("strategyParamsGrid") or []
+                        if param_grid and (train_start is not None) and (train_end is not None):
+                            dff_train = df[(df["time"] >= train_start) & (df["time"] <= train_end)].reset_index(drop=True)
+                            if len(dff_train) >= 50:
+                                exit_cfg_local_tmpl = ExitConfig(
+                                    use_opposite = exit_cfg.use_opposite,
+                                    stop_loss_pct = exit_cfg.stop_loss_pct,
+                                    take_profit_pct = exit_cfg.take_profit_pct,
+                                    time_limit_bars = exit_cfg.time_limit_bars,
+                                    trailing_pct = exit_cfg.trailing_pct,
+                                    fee_bps = fee_bps,
+                                    slippage_bps = slp_bps,
+                                )
+                                best_params, train_stats = _train_select_params(
+                                    dff_train,
+                                    strategy_code,
+                                    param_grid,
+                                    exit_cfg_local_tmpl,
+                                    include_eot,
+                                    resolve_signals_for_combo  # 함수 주입
+                                )
+
+                    if len(dff_test) < 50:
+                        prof_steps.append({"fold": [train_start, train_end, test_start, test_end],
+                                        "trades": [], "stats": {}, "opt": {"bestParams": best_params, "trainStats": train_stats}})
+                        continue
+
+                    # --- [검증] 최종 파라미터로 test 구간 시그널 생성 ---
+                    if strategy_code and best_params is not None:
+                        entry_test, opp_test = resolve_signals_for_combo(dff_test, strategy_code, best_params)
+                    else:
+                        # 기존 로직: 이미 계산된 entry_by_time / opp_by_time를 폴드에 맞춰 정렬
+                        t_fold = dff_test["time"].astype("int64")
+                        entry_fold = pd.Series(
+                            entry_by_time.reindex(t_fold).fillna(0).astype(int).to_numpy(),
+                            index=dff_test.index
+                        )
+                        opp_fold = None
+                        if opp_by_time is not None:
+                            opp_fold = pd.Series(
+                                opp_by_time.reindex(t_fold).fillna(0).astype(int).to_numpy(),
+                                index=dff_test.index
+                            )
+                        entry_test, opp_test = entry_fold, opp_fold
+
+                    # 엔진 호출
+                    exit_cfg_local = ExitConfig(
+                        use_opposite = exit_cfg.use_opposite,
+                        stop_loss_pct = exit_cfg.stop_loss_pct,
+                        take_profit_pct = exit_cfg.take_profit_pct,
+                        time_limit_bars = exit_cfg.time_limit_bars,
+                        trailing_pct = exit_cfg.trailing_pct,
+                        fee_bps = fee_bps,
+                        slippage_bps = slp_bps,
+                    )
+
+                    # 시리즈 타입 보정(튜닝 분기에서 온 경우)
+                    if isinstance(entry_test, pd.Series) and entry_test.index.equals(dff_test.index):
+                        ef = entry_test
+                    else:
+                        ef = pd.Series(entry_test, index=dff_test.index).fillna(0).astype(int)
+
+                    of = None
+                    if opp_test is not None:
+                        if isinstance(opp_test, pd.Series) and opp_test.index.equals(dff_test.index):
+                            of = opp_test
+                        else:
+                            of = pd.Series(opp_test, index=dff_test.index).fillna(0).astype(int)
+
+                    r = backtest_single(dff_test, ef, of, exit_cfg_local, fill_next_bar=True)
+
+                    # EOT 라벨링 + 통계
+                    all_trades = _tag_eot(r.get("trades") or [], int(dff_test["time"].iloc[-1]))
+                    trades_for_stats = [t for t in all_trades if include_eot or (t.get("reason") != "EOT")]
+                    metrics = _calc_metrics_from_trades(trades_for_stats, int(dff_test["time"].iloc[0]), int(dff_test["time"].iloc[-1]))
+
+                    trades = (all_trades[:limit_trades]
+                            if isinstance(limit_trades, int) and limit_trades > 0 else all_trades)
+
+                    prof_steps.append({
+                        "fold": [train_start, train_end, test_start, test_end],
+                        "trades": trades,
+                        "stats": {**(r.get("stats") or {}), **metrics},
+                        "opt": {"bestParams": best_params, "trainStats": train_stats}
+                    })
+                    prof_total_trades += metrics["trades"]
+
+                sym_out["profiles"].append({"name": prof_name, "runs": prof_steps, "totalTrades": prof_total_trades})
+
 
                 for (_ts, _te, test_start, test_end) in folds_plan:
                     dff = df[(df["time"] >= test_start) & (df["time"] <= test_end)].reset_index(drop=True)
@@ -419,13 +763,33 @@ def run_scenario_service(payload: Dict[str, Any]) -> Dict[str, Any]:
                         fee_bps = fee_bps,
                         slippage_bps = slp_bps,
                     )
-                    r = backtest_single(dff, entry.reindex(dff.index).fillna(0).astype(int), opp_exit.reindex(dff.index).fillna(0).astype(int) if opp_exit is not None else None, exit_cfg_local, fill_next_bar=True)
-
+                    # ✅ 폴드 범위 time으로 정확 정렬
+                    t_fold = dff["time"].astype("int64")
+                    entry_fold = pd.Series(
+                        entry_by_time.reindex(t_fold).fillna(0).astype(int).to_numpy(),
+                        index=dff.index
+                    )
+                    opp_fold = None
+                    if opp_by_time is not None:
+                        opp_fold = pd.Series(
+                            opp_by_time.reindex(t_fold).fillna(0).astype(int).to_numpy(),
+                            index=dff.index
+                        )
+                    r = backtest_single(
+                        dff,
+                        entry_fold,
+                        opp_fold,
+                        exit_cfg_local,
+                        fill_next_bar=True
+                    )
                     # EoT 라벨링(원본에 없을 수 있음)
-                    trades = _tag_eot(r.get("trades") or [], int(dff["time"].iloc[-1]))
-                    # includeEoTInStats가 False면 EOT 제외 후 지표 계산
-                    trades_for_stats = [t for t in trades if include_eot or (t.get("reason") != "EOT")]
+                    all_trades = _tag_eot(r.get("trades") or [], int(dff["time"].iloc[-1]))
+                    # includeEoTInStats가 False면 EOT 제외 후 지표 계산 (← 지표는 '전체'로 계산)
+                    trades_for_stats = [t for t in all_trades if include_eot or (t.get("reason") != "EOT")]
                     metrics = _calc_metrics_from_trades(trades_for_stats, int(dff["time"].iloc[0]), int(dff["time"].iloc[-1]))
+                    # ✅ 보기엔 가볍게: 응답에 싣는 리스트만 limitTrades로 컷
+                    trades = (all_trades[:limit_trades]
+                              if isinstance(limit_trades, int) and limit_trades > 0 else all_trades)
 
                     prof_steps.append({
                         "fold": [test_start, test_end],
@@ -448,6 +812,7 @@ def run_scenario_service(payload: Dict[str, Any]) -> Dict[str, Any]:
             "periodKey": period_key,
             "exit": exit_cfg_raw,
             "runs": step_runs,   # [{ symbol, tf, profiles:[{name, runs:[{fold, trades, stats}], totalTrades}] }]
+            "isRegime": (chain_mode == "state" and step_index < (total_steps - 1)),
         })
 
     resp = {

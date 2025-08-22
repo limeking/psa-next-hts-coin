@@ -1,6 +1,9 @@
 # backend/services/strategy_manager.py
 import pandas as pd
 import numpy as np
+# === [ADD] 공통 유틸 ===
+from dataclasses import dataclass
+from typing import Callable, Dict, Any, Optional, Tuple
 
 def _sma(s: pd.Series, n=20):
     return s.rolling(n, min_periods=n).mean()
@@ -95,24 +98,193 @@ def _pattern_entry(df: pd.DataFrame, name: str):
         return _detect_lower_highs_reversal_core(df), None
     return None, None
 
-def resolve_signals_for_combo(df: pd.DataFrame, combo_name: str):
+def _to_bool_int(sr: pd.Series) -> pd.Series:
+    return sr.fillna(False).astype(int)
+
+def _ema(s: pd.Series, span: int) -> pd.Series:
+    return s.ewm(span=span, adjust=False).mean()
+
+def _vol_series(df: pd.DataFrame) -> pd.Series:
+    return pd.to_numeric(df.get("volume"), errors="coerce")
+
+def _apply_optional_filters(entry_bool: pd.Series, df: pd.DataFrame, params: Dict[str, Any]) -> pd.Series:
+    """전략 엔트리에 공통 거래량 기반 필터를 적용"""
+    vol = _vol_series(df)
+    out = entry_bool.copy()
+
+    # 1) 절대 거래량 최소값
+    if "min_volume" in params:
+        out = out & (vol >= float(params["min_volume"]))
+
+    # 2) 거래량 이동평균 배수 필터 (예: vol >= k * SMA(vol, n))
+    if "volume_sma_n" in params and "volume_sma_mult" in params:
+        n = int(params["volume_sma_n"]); k = float(params["volume_sma_mult"])
+        vma = vol.rolling(n, min_periods=n).mean()
+        out = out & (vol >= (vma * k))
+
+    # 3) 거래량 증감률 필터 (전봉 대비 %)
+    if "min_volume_change_pct" in params:
+        chg = (vol / vol.shift(1) - 1.0) * 100.0
+        out = out & (chg >= float(params["min_volume_change_pct"]))
+
+    return out
+
+# === [ADD] 전략 함수들 ===
+def _strat_ma_cross(df: pd.DataFrame, p: Dict[str, Any]) -> Tuple[pd.Series, Optional[pd.Series]]:
+    """이동평균선 골든/데드 크로스"""
+    close = pd.to_numeric(df["close"], errors="coerce")
+    fast = int(p.get("fast", 5))
+    slow = int(p.get("slow", 20))
+    direction = str(p.get("direction", "up")).lower()  # "up"|"golden"|"down"|"dead"
+
+    ma_f = close.rolling(fast, min_periods=fast).mean()
+    ma_s = close.rolling(slow, min_periods=slow).mean()
+
+    up   = (ma_f > ma_s) & (ma_f.shift(1) <= ma_s.shift(1))
+    down = (ma_f < ma_s) & (ma_f.shift(1) >= ma_s.shift(1))
+
+    if direction in ("down", "dead"):
+        entry = down
+        opp   = up
+    else:
+        entry = up
+        opp   = down
+
+    return _to_bool_int(entry), _to_bool_int(opp)
+
+def _strat_rsi_bands(df: pd.DataFrame, p: Dict[str, Any]) -> Tuple[pd.Series, Optional[pd.Series]]:
+    """RSI 30/70 밴드 크로스"""
+    close = pd.to_numeric(df["close"], errors="coerce")
+    n    = int(p.get("length", 14))
+    low  = float(p.get("low", 30))
+    high = float(p.get("high", 70))
+    rsi  = _rsi(close, n)
+
+    entry = (rsi > low) & (rsi.shift(1) <= low)     # 저밴드 상향 돌파
+    opp   = (rsi < high) & (rsi.shift(1) >= high)   # 고밴드 하향 돌파
+    return _to_bool_int(entry), _to_bool_int(opp)
+
+def _strat_macd_cross(df: pd.DataFrame, p: Dict[str, Any]) -> Tuple[pd.Series, Optional[pd.Series]]:
+    """MACD 라인-시그널 크로스"""
+    close  = pd.to_numeric(df["close"], errors="coerce")
+    fast   = int(p.get("fast", 12))
+    slow   = int(p.get("slow", 26))
+    signal = int(p.get("signal", 9))
+
+    ema_fast = _ema(close, fast)
+    ema_slow = _ema(close, slow)
+    macd     = ema_fast - ema_slow
+    sig      = _ema(macd, signal)
+
+    up   = (macd > sig) & (macd.shift(1) <= sig.shift(1))
+    down = (macd < sig) & (macd.shift(1) >= sig.shift(1))
+    return _to_bool_int(up), _to_bool_int(down)
+
+def _strat_ma_breakout(df: pd.DataFrame, p: Dict[str, Any]) -> Tuple[pd.Series, Optional[pd.Series]]:
+    """MA n선 돌파 (디폴트 대체전략: MA20 돌파/이탈)"""
+    close = pd.to_numeric(df["close"], errors="coerce")
+    n = int(p.get("length", 20))
+    ma = close.rolling(n, min_periods=n).mean()
+    up   = (close > ma) & (close.shift(1) <= ma.shift(1))
+    down = (close < ma) & (close.shift(1) >= ma.shift(1))
+    return _to_bool_int(up), _to_bool_int(down)
+
+def _strat_volume_spike(df: pd.DataFrame, p: Dict[str, Any]) -> Tuple[pd.Series, Optional[pd.Series]]:
+    """거래량 스파이크 (vol >= k * SMA(vol, n))"""
+    vol = _vol_series(df)
+    n   = int(p.get("n", 20))
+    k   = float(p.get("mult", 2.0))
+    vma = vol.rolling(n, min_periods=n).mean()
+    entry = vol >= (vma * k)
+    # 반대 신호는 보통 사용하지 않음(필요시 v < vma)
+    opp   = vol < vma
+    return _to_bool_int(entry), _to_bool_int(opp)
+
+# === [ADD] 전략 스펙/레지스트리 ===
+@dataclass
+class StrategySpec:
+    code: str
+    func: Callable[[pd.DataFrame, Dict[str, Any]], Tuple[pd.Series, Optional[pd.Series]]]
+    defaults: Dict[str, Any]
+    desc: str = ""
+
+STRATEGY_REGISTRY: Dict[str, StrategySpec] = {
+    "MA_CROSS": StrategySpec(
+        code="MA_CROSS",
+        func=_strat_ma_cross,
+        defaults={"fast": 5, "slow": 20, "direction": "up"},
+        desc="이평선 골든/데드 크로스"
+    ),
+    "RSI_BANDS": StrategySpec(
+        code="RSI_BANDS",
+        func=_strat_rsi_bands,
+        defaults={"length": 14, "low": 30, "high": 70},
+        desc="RSI 밴드(30/70) 크로스"
+    ),
+    "MACD_CROSS": StrategySpec(
+        code="MACD_CROSS",
+        func=_strat_macd_cross,
+        defaults={"fast": 12, "slow": 26, "signal": 9},
+        desc="MACD 라인-시그널 크로스"
+    ),
+    "MA_BREAKOUT": StrategySpec(
+        code="MA_BREAKOUT",
+        func=_strat_ma_breakout,
+        defaults={"length": 20},
+        desc="MA n선 돌파/이탈"
+    ),
+    "VOLUME_SPIKE": StrategySpec(
+        code="VOLUME_SPIKE",
+        func=_strat_volume_spike,
+        defaults={"n": 20, "mult": 2.0},
+        desc="거래량 스파이크"
+    ),
+}
+
+# 과거 코드 호환용 별칭 (프론트/저장된 콤보와의 호환)
+ALIASES: Dict[str, Tuple[str, Dict[str, Any]]] = {
+    "MA5_20_cross": ("MA_CROSS", {"fast": 5, "slow": 20, "direction": "up"}),
+    "RSI_30_70":   ("RSI_BANDS", {"length": 14, "low": 30, "high": 70}),
+    "MA20_breakout": ("MA_BREAKOUT", {"length": 20}),
+}
+
+def list_strategies() -> Dict[str, Dict[str, Any]]:
+    """프론트에 노출 가능한 전략 메타(기본값/설명)"""
+    return {k: {"defaults": v.defaults, "desc": v.desc} for k, v in STRATEGY_REGISTRY.items()}
+
+# === [REPLACE] 기존 resolve_signals_for_combo → 파라미터 지원 버전 ===
+def resolve_signals_for_combo(df: pd.DataFrame, combo_name: str, params: Optional[Dict[str, Any]] = None):
+    """
+    반환: (entry_series[int 0/1], opp_exit_series[int 0/1] | None)
+    - params에 거래량 필터(min_volume, volume_sma_n+volume_sma_mult, min_volume_change_pct) 등 전달 가능
+    """
+    # 1) 패턴류(컵핸들 등)를 먼저 체크 (기존 함수 재사용)
     e, x = _pattern_entry(df, combo_name)
     if e is not None:
-        return e, x
-    close = df["close"]
-    name = str(combo_name or "")
-    if name == "RSI_30_70":
-        rsi = _rsi(close, 14)
-        entry = ((rsi > 30) & (rsi.shift(1) <= 30)).astype(int)
-        exit_opp = ((rsi < 70) & (rsi.shift(1) >= 70)).astype(int)
-        return entry, exit_opp
-    if name == "MA5_20_cross":
-        ma5 = _sma(close, 5)
-        ma20 = _sma(close, 20)
-        entry = ((ma5 > ma20) & (ma5.shift(1) <= ma20.shift(1))).astype(int)
-        exit_opp = ((ma5 < ma20) & (ma5.shift(1) >= ma20.shift(1))).astype(int)
-        return entry, exit_opp
-    ma = _sma(close, 20)  # default: MA20_breakout
-    entry = ((close > ma) & (close.shift(1) <= ma.shift(1))).astype(int)
-    exit_opp = ((close < ma) & (close.shift(1) >= ma.shift(1))).astype(int)
-    return entry, exit_opp
+        entry_bool = e.astype(bool) if e.dtype != bool else e
+        entry_bool = _apply_optional_filters(entry_bool, df, params or {})
+        return _to_bool_int(entry_bool), (_to_bool_int(x) if x is not None else None)
+
+    # 2) 별칭 → 정규 전략 코드로 변환
+    code = str(combo_name or "")
+    base_params: Dict[str, Any] = {}
+    if code in ALIASES:
+        code, base_params = ALIASES[code]
+
+    # 3) 정규 전략 레지스트리 조회
+    spec = STRATEGY_REGISTRY.get(code)
+    if not spec:
+        # 미지정/미지원 코드는 MA_BREAKOUT(20)로 폴백
+        spec = STRATEGY_REGISTRY["MA_BREAKOUT"]
+
+    # 4) 파라미터 병합(기본값 ← 별칭기본 ← 호출파라미터)
+    merged = {**spec.defaults, **base_params, **(params or {})}
+
+    # 5) 전략 실행
+    entry, opp = spec.func(df, merged)
+
+    # 6) 공통 거래량 필터 적용
+    entry_bool = entry.astype(bool)
+    entry_bool = _apply_optional_filters(entry_bool, df, merged)
+
+    return _to_bool_int(entry_bool), (opp if opp is None else _to_bool_int(opp))

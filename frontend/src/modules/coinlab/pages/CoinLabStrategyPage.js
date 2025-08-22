@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import ConditionComboPicker from "../components/ConditionSearch/ConditionComboPicker";
 import { BACKTEST_PERIOD_PRESETS, INTERVALS, INTERVAL_LABELS } from "../constants";
 import { fetchWatchlistSymbols, fetchWatchlistNames } from "../services/watchlistApi";
+import { fetchStrategies } from "../api/strategies";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 유틸/상수
@@ -22,6 +23,8 @@ const DEFAULT_EXIT = {
 };
 
 
+
+
 // 파일 상단 import 밑에(컴포넌트 밖)
 const tipIconStyle = { cursor: "help", fontSize: 12, opacity: 0.7, border: "1px solid #ccc", borderRadius: 10, padding: "0 6px" };
 const warnBadgeStyle = { marginLeft: 8, fontSize: 12, color: "#a10000", background: "#ffe6e6", border: "1px solid #ffb3b3", borderRadius: 6, padding: "2px 6px" };
@@ -33,8 +36,11 @@ function newStep(idSeed = Date.now()) {
     id: `${idSeed}`,
     tf: "1d",               // 기본: 일봉
     comboName: null,         // 조건검색식 조합 이름
+    strategyCode: null, // ✅ 추가: 전략/패턴 코드(필수 선택용, 기본값)
     periodKey: "12m",       // 최근 1년
-    exit: { ...DEFAULT_EXIT }
+    exit: { ...DEFAULT_EXIT },
+    requireBoth: false, // ✅ 조건식+전략 동시 충족 체크박스
+    strategyParamsGrid: [],      // ✅ 폴드 튜닝용 후보 파라미터 리스트
   };
 }
 
@@ -80,6 +86,28 @@ export default function CoinLabStrategyPage() {
   const [wfFolds, setWfFolds] = useState(0);
   const [wfScheme, setWfScheme] = useState("rolling");
 
+  const [limitTrades, setLimitTrades] = useState(200);
+
+  const [strategies, setStrategies] = useState({});
+  const [strategiesLoading, setStrategiesLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const data = await fetchStrategies();
+        if (!mounted) return;
+        setStrategies(data || {});
+      } catch (e) {
+        console.error(e);
+      } finally {
+        if (mounted) setStrategiesLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+  
+
   // 초기 로드: 전체심볼 + 관심종목 이름
   useEffect(() => {
     let mounted = true;
@@ -108,6 +136,13 @@ export default function CoinLabStrategyPage() {
     })();
     return () => { mounted = false; };
   }, []);
+
+  useEffect(() => {
+    // 단계가 2개 이상이면 기본 state로 자동 전환 (사용자가 바꾸면 그대로 둠)
+    if (steps.length > 1 && chainMode === "parallel") {
+      setChainMode("state");
+    }
+  }, [steps.length]);
 
   // 관심종목 선택 변경 시 심볼 로딩
   useEffect(() => {
@@ -166,8 +201,11 @@ export default function CoinLabStrategyPage() {
     const stepsPayload = steps.map(s => ({
       tf: s.tf,
       comboName: s.comboName ?? null,
+      strategyCode: s.strategyCode ?? null,   // ✅ 추가
       periodKey: s.periodKey,
       exit: s.exit,
+      requireBoth: !!s.requireBoth,   // ✅ 추가
+      strategyParamsGrid: s.strategyParamsGrid ?? [],  // ✅ (튜닝 후보)
     }));
     return {
       scope,
@@ -176,12 +214,24 @@ export default function CoinLabStrategyPage() {
       steps: stepsPayload,
       chainMode,
       walkForward: { folds: wfFolds, scheme: wfScheme },
+      limitTrades,
+      // ✅ 선택: 1단계만 있고 전략이 없으며 콤보는 있을 때 "콤보=전략" 힌트
+      singleStepComboAsStrategy:
+        steps.length === 1 && !steps[0]?.strategyCode && !!steps[0]?.comboName,
     };
   }
-
+  console.log("payload =", JSON.stringify(buildPayload(), null, 2));
   // ── 실행 핸들러 (AbortController 포함) ────────────
   async function handleRunBacktest() {
     if (isRunning) return;
+    // ✅ 단일 단계 실행 안전 가드: 전략/조합 둘 다 비었으면 막기
+    if (steps.length === 1) {
+      const s0 = steps[0] || {};
+      if (!s0.strategyCode && !s0.comboName) {
+        alert("1단계 실행: 전략 또는 조건검색식 조합 중 하나는 반드시 선택하세요.");
+        return;
+      }
+    }
     const payload = buildPayload();
     if (!payload.symbols?.length) {
       alert("실행할 심볼이 없습니다.");
@@ -196,7 +246,7 @@ export default function CoinLabStrategyPage() {
       const res = await fetch("/api/coinlab/backtest/run_scenario", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPayload()),  // ← 이 한 줄로 워크포워드/옵션 포함
+        body: JSON.stringify(payload),   // 위에서 만든 payload 사용
         signal: ctl.signal,
       });
       if (!res.ok) {
@@ -254,6 +304,35 @@ export default function CoinLabStrategyPage() {
               ))}
             </select>
           )}
+          {/* === 표시 거래 상한 (limitTrades) 입력 === */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <label title="응답에서 표시할 거래 로그 개수 상한입니다. 통계는 전체 거래 기준으로 계산됩니다.">
+              표시 거래 상한
+            </label>
+            <input
+              type="number"
+              min={0}
+              step={10}
+              value={limitTrades}
+              onChange={(e) => {
+                const v = parseInt(e.target.value || "0", 10);
+                // 0=무제한, 음수 방지 / 너무 큰 값 제한(선택)
+                const safe = isNaN(v) ? 0 : Math.max(0, Math.min(v, 5000));
+                setLimitTrades(safe);
+              }}
+              style={{
+                width: 100,
+                padding: "6px 8px",
+                border: "1px solid #e5e7eb",
+                borderRadius: 8,
+                fontSize: 13,
+              }}
+            />
+            <span style={{ fontSize: 12, color: "#6b7280" }}>
+              0은 무제한 · 응답 크기/속도를 위해 50~500 권장
+            </span>
+          </div>
+
           <div style={{ marginLeft: "auto", fontSize: 12, color: "#334155" }}>
             미리보기: <b>{previewCountText}</b>
           </div>
@@ -269,6 +348,11 @@ export default function CoinLabStrategyPage() {
             <option value="gated">게이팅-동시(같은 봉)</option>
             <option value="state">게이팅-상태(전단계 레짐)</option>
           </select>
+          {steps.length > 1 && chainMode === "parallel" && (
+            <div title="병렬 모드에서는 단계가 서로 독립 실행됩니다. '게이팅' 모드를 고려해보세요.">
+              ⚠️ 지금은 병렬 모드입니다. 다단계 필터 효과가 약할 수 있어요.
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           <label>워크포워드 폴드</label>
@@ -310,16 +394,18 @@ export default function CoinLabStrategyPage() {
 
       {/* 시나리오 단계들 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
-        {steps.map((step, idx) => (
-          <StepCard
-            key={step.id}
-            step={step}
-            index={idx}
-            onRemove={removeStep}
-            onUpdate={updateStep}
-            onUpdateExit={updateExit}
-          />
-        ))}
+      {steps.map((step, idx) => (
+        <StepCard
+          key={step.id}
+          step={step}
+          index={idx}
+          onRemove={removeStep}
+          onUpdate={updateStep}
+          onUpdateExit={updateExit}
+          strategies={strategies}
+          strategiesLoading={strategiesLoading}
+        />
+      ))}
       </div>
 
       {/* 실행/결과 */}
@@ -342,15 +428,29 @@ export default function CoinLabStrategyPage() {
             <div style={{ fontWeight: 700, marginBottom: 8, color: "#0F172A" }}>결과 요약</div>
             <div style={{ fontSize: 14 }}>
               사용 심볼: <b>{runSummary?.summary?.symbols ?? 0}</b> 개 · 총 체결: <b>{runSummary?.summary?.totalTrades ?? 0}</b>
+              · 실행 모드: <b>{(runSummary?.summary?.chainMode ?? chainMode ?? "parallel")}</b>
             </div>
           </div>
         )}
-        {runSummary?.steps?.map((step, si) => (
-          <div key={si} style={{ marginTop: 12 }}>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>
-              [{si+1}단계] TF: {step.tf}, 콤보: {step.combo}, 기간: {step.periodKey}
-            </div>
-            {(!step.runs || step.runs.length===0) ? (
+        {runSummary?.steps?.map((step, si) => {
+          // 1) chainMode는 응답(summary.chainMode) 우선, 없으면 현재 화면의 chainMode 사용
+          const chain = runSummary?.summary?.chainMode ?? chainMode ?? "parallel";
+          // 2) isRegime은 서버가 내려주면 그 값을 쓰고, 없으면
+          //    'state 모드 & 마지막 단계가 아닐 때'를 레짐 단계로 간주 (폴백)
+          const lastIndex = (runSummary?.steps?.length ?? 1) - 1;
+          const isRegime = (typeof step.isRegime === "boolean")
+            ? step.isRegime
+            : (chain === "state" && si < lastIndex);
+          return (
+            <div key={si} style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                [{si+1}단계] TF: {step.tf}, 콤보: {step.combo}, 기간: {step.periodKey}
+              </div>
+              {isRegime ? (
+              <div style={{ fontSize: 12, color: "#64748B" }}>
+                레짐 단계(상태 게이팅 전용) — 이 단계에서는 매매를 실행하지 않습니다.
+              </div>
+            ) : (!step.runs || step.runs.length===0) ? (
               <div style={{ fontSize: 13, color: "#64748B" }}>
                 이 단계에서 표시할 결과가 없습니다. (데이터 부족 또는 신호 없음)
               </div>
@@ -406,7 +506,7 @@ export default function CoinLabStrategyPage() {
               </table>
             )}
           </div>
-        ))}
+        )})}
       </div>
 
       {/* 로딩 오버레이 */}
@@ -422,7 +522,7 @@ export default function CoinLabStrategyPage() {
 // ──────────────────────────────────────────────────────────────────────────────
 // StepCard 컴포넌트 (단일 파일 내부 정의)
 // ──────────────────────────────────────────────────────────────────────────────
-function StepCard({ step, index, onRemove, onUpdate, onUpdateExit }) {
+function StepCard({ step, index, onRemove, onUpdate, onUpdateExit, strategies, strategiesLoading }) {
   const isLocked = false;
   const tfOptions = INTERVALS; // constants에서 가져온 간단한 목록
   const isDaily = step.tf === "1d";
@@ -454,6 +554,58 @@ function StepCard({ step, index, onRemove, onUpdate, onUpdateExit }) {
         onChange={(name) => onUpdate?.(step.id, { comboName: name })}
         placeholder="조건검색식 조합 선택"
       />
+      {/* ✅ 전략/패턴 선택 */}
+      <label style={{ ...fieldLabel, marginTop: 10 }}>전략/패턴</label>
+      <select
+        value={step.strategyCode || ""}
+        onChange={e => onUpdate?.(step.id, { strategyCode: e.target.value || null })}
+        style={select}
+        title="진입/청산 시그널을 생성할 전략/패턴을 선택하세요"
+      >
+        <option value="">전략 선택(없음)</option> {/* ← 기본 '없음' */}
+        {strategiesLoading ? (
+          <option value="">불러오는 중…</option>
+        ) : (
+          Object.entries(strategies).map(([code, meta]) => (
+            <option key={code} value={code}>
+              {meta?.desc ? `${meta.desc} (${code})` : code}
+            </option>
+          ))
+        )}
+      </select>
+      <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+        기본: 전략 우선. 아래 체크를 켜면 <b>두 조건 모두 충족</b>일 때만 진입합니다.
+      </div>
+
+      <label style={{ ...fieldLabel, marginTop: 8 }}>파라미터 후보(JSON 리스트, 옵션)</label>
+      <textarea
+        value={JSON.stringify(step.strategyParamsGrid || [], null, 2)}
+        onChange={e => {
+          try {
+            const v = JSON.parse(e.target.value || "[]");
+            if (Array.isArray(v)) onUpdate?.(step.id, { strategyParamsGrid: v });
+          } catch (_) {
+            // JSON 파싱 실패해도 즉시 에러 안 띄움(사용자 편의)
+          }
+        }}
+        placeholder='예: [{"fast":5,"slow":20},{"fast":10,"slow":50}]'
+        style={{ width:"100%", height: 80, fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace",
+                fontSize:12, padding:8, border:"1px solid #E5E7EB", borderRadius:8, background:"#fff" }}
+      />
+
+      {/* ✅ “조건식 + 전략 동시 충족” 체크 */}
+      <label style={{ ...checkLabel, marginTop: 6 }}>
+        <input
+          type="checkbox"
+          disabled={!step.comboName || !step.strategyCode}
+          checked={!!step.requireBoth}
+          onChange={e => onUpdate?.(step.id, { requireBoth: e.target.checked })}
+          title={!step.comboName || !step.strategyCode
+            ? "조건검색식과 전략을 모두 선택해야 사용할 수 있습니다."
+            : "이 단계를 '조건식 AND 전략'으로 실행합니다."}
+        />
+        조건검색식 + 전략 모두 충족 시에만 진입 (AND)
+      </label>
 
       {/* 기간 프리셋 */}
       <label style={{ ...fieldLabel, marginTop: 10 }}>기간</label>
