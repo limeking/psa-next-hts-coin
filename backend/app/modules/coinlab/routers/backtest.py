@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Body, HTTPException
 from typing import Dict, Any
 from ..services.backtest_service import run_scenario_service
+from ..services.strategy_manager import list_strategies
 
 router = APIRouter(prefix="/api/coinlab", tags=["backtest"])
 
@@ -13,3 +14,7 @@ def run_scenario(payload: Dict[str, Any] = Body(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"run_scenario failed: {e}")
+
+@router.get("/backtest/strategies")
+def get_strategies():
+    return list_strategies()
